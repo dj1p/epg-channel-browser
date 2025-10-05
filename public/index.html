@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EPG Channel Browser</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes gradient {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    .animated-gradient {
+      background: linear-gradient(-45deg, #1e293b, #1e40af, #312e81, #1e293b);
+      background-size: 400% 400%;
+      animation: gradient 15s ease infinite;
+    }
+  </style>
+</head>
+<body class="animated-gradient min-h-screen">
+  <div id="app" class="p-4 md:p-8">
+    <!-- Loading State -->
+    <div id="loading" class="flex items-center justify-center min-h-screen">
+      <div class="text-white text-xl">
+        <svg class="animate-spin h-10 w-10 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        Loading EPG sources...
+      </div>
+    </div>
+
+    <!-- Main Content (hidden initially) -->
+    <div id="content" class="hidden max-w-7xl mx-auto">
+      <!-- Header -->
+      <div class="text-center mb-8">
+        <h1 class="text-4xl md:text-5xl font-bold text-white mb-3 flex items-center justify-center gap-3">
+          <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+          </svg>
+          EPG Channel Browser
+        </h1>
+        <p class="text-blue-200 text-lg">
+          Search and browse <span id="channelCount">0</span> EPG sources from dj1p/epg repository
+        </p>
+        <a href="https://github.com/dj1p/epg" target="_blank" rel="noopener noreferrer"
+           class="text-blue-300 hover:text-blue-100 text-sm mt-2 inline-block">
+          View Repository on GitHub →
+        </a>
+        <div class="mt-2 text-xs text-blue-300/70">
+          Last updated: <span id="lastUpdate">-</span>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="bg-white/10 backdrop-blur-lg rounded-2xl p-6 mb-6 shadow-2xl border border-white/20">
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <!-- Search -->
+          <div class="md:col-span-2">
+            <label class="block text-sm font-medium text-blue-200 mb-2">
+              <svg class="inline w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+              </svg>
+              Search Channels
+            </label>
+            <input type="text" id="searchInput" placeholder="Channel name, country, or ID..."
+                   class="w-full px-4 py-2 rounded-lg bg-white/10 border border-white/30 text-white placeholder-blue-300/50 focus:outline-none focus:ring-2 focus:ring-blue-400">
+          </div>
+
+          <!-- Site Filter -->
+          <div>
+            <label class="block text-sm font-medium text-blue-200 mb-2">
+              <svg class="inline w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+              </svg>
+              Site
+            </label>
+            <select id="siteFilter" class="w-full px-4 py-2 rounded-lg bg-white/10 border border-white/30 text-white focus:outline-none focus:ring-2 focus:ring-blue-400">
+              <option value="">All Sites</option>
+            </select>
+          </div>
+
+          <!-- Language Filter -->
+          <div>
+            <label class="block text-sm font-medium text-blue-200 mb-2">
+              <svg class="inline w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path>
+              </svg>
+              Language
+            </label>
+            <select id="langFilter" class="w-full px-4 py-2 rounded-lg bg-white/10 border border-white/30 text-white focus:outline-none focus:ring-2 focus:ring-blue-400">
+              <option value="">All Languages</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Results count and actions -->
+        <div class="flex justify-between items-center mt-4 pt-4 border-t border-white/20">
+          <div class="text-blue-200 text-sm">
+            Showing <span id="resultCount">0</span> of <span id="totalCount">0</span> channels
+          </div>
+          <div class="flex gap-2">
+            <button id="resetBtn" class="text-sm px-4 py-1 bg-blue-500/30 hover:bg-blue-500/50 text-white rounded-lg transition">
+              Reset Filters
+            </button>
+            <button id="refreshBtn" class="text-sm px-4 py-1 bg-green-500/30 hover:bg-green-500/50 text-white rounded-lg transition">
+              Refresh Data
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Channel List -->
+      <div id="channelList" class="space-y-3"></div>
+
+      <!-- No Results -->
+      <div id="noResults" class="hidden bg-white/10 backdrop-blur-lg rounded-xl p-8 text-center text-blue-200">
+        No channels found matching your criteria.
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
