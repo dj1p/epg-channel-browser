@@ -3,7 +3,22 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>EPG Channel Browser</title>
+  <title>EPG Channel Browser - Free IPTV EPG Source Directory</title>
+  
+  <!-- SEO Meta Tags -->
+  <meta name="description" content="Browse and search 150,000+ EPG (Electronic Program Guide) sources for IPTV. Free XML channel database for TV listings, guide data, and program schedules.">
+  <meta name="keywords" content="EPG, IPTV, XML TV, electronic program guide, TV guide, XMLTV, channel listings, EPG sources, TV schedules">
+  <meta name="author" content="Your Name">
+  
+  <!-- Open Graph / Social Media -->
+  <meta property="og:title" content="EPG Channel Browser - Free IPTV EPG Directory">
+  <meta property="og:description" content="Search 150,000+ EPG sources for IPTV. Free XML channel database from dj1p/epg repository.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://epg.austheim.app">
+  
+  <!-- Canonical URL -->
+  <link rel="canonical" href="https://epg.austheim.app">
+  
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     @keyframes gradient {
@@ -17,6 +32,9 @@
       animation: gradient 15s ease infinite;
     }
   </style>
+  
+  <!-- Google AdSense - Replace with your own ID -->
+  <!-- <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXX" crossorigin="anonymous"></script> -->
 </head>
 <body class="animated-gradient min-h-screen">
   <div id="app" class="p-4 md:p-8">
@@ -31,25 +49,73 @@
       </div>
     </div>
 
-    <!-- Main Content (hidden initially) -->
+    <!-- Main Content -->
     <div id="content" class="hidden max-w-7xl mx-auto">
       <!-- Header -->
       <div class="text-center mb-8">
+        <div class="flex justify-end mb-4">
+          <!-- PayPal Donation Button -->
+          <a href="https://www.paypal.com/donate/?business=L67GASE23ELRA&currency_code=USD" target="_blank" 
+             class="inline-flex items-center gap-2 px-6 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-semibold rounded-lg transition shadow-lg">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944.901C5.026.382 5.474 0 5.998 0h7.46c2.57 0 4.578.543 5.69 1.81 1.01 1.15 1.304 2.42 1.012 4.287-.023.143-.047.288-.077.437-.983 5.05-4.349 6.797-8.647 6.797h-2.19c-.524 0-.968.382-1.05.9l-1.12 7.106zm14.146-14.42a3.35 3.35 0 0 0-.607-.541c-.013.076-.026.175-.041.254-.93 4.778-4.005 7.201-9.138 7.201h-2.19a.563.563 0 0 0-.556.479l-1.187 7.527h-.506L9.95 14.31h1.24c5.238 0 9.227-2.134 10.032-8.393z"/>
+            </svg>
+            Support This Project
+          </a>
+        </div>
+
         <h1 class="text-4xl md:text-5xl font-bold text-white mb-3 flex items-center justify-center gap-3">
           <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
           </svg>
           EPG Channel Browser
         </h1>
-        <p class="text-blue-200 text-lg">
-          Search and browse <span id="channelCount">0</span> EPG sources from dj1p/epg repository
+        
+        <p class="text-blue-200 text-xl mb-2">
+          Your One-Stop Directory for IPTV EPG Sources
         </p>
-        <a href="https://github.com/dj1p/epg" target="_blank" rel="noopener noreferrer"
-           class="text-blue-300 hover:text-blue-100 text-sm mt-2 inline-block">
-          View Repository on GitHub →
-        </a>
-        <div class="mt-2 text-xs text-blue-300/70">
-          Last updated: <span id="lastUpdate">-</span>
+        
+        <p class="text-blue-300/80 max-w-3xl mx-auto mb-4">
+          Browse and search through <span id="channelCount" class="font-bold text-blue-100">150,000+</span> EPG (Electronic Program Guide) sources. 
+          Free, open-source XML channel database for IPTV applications, media centers, and streaming platforms.
+        </p>
+
+        <div class="flex flex-wrap gap-4 justify-center mb-4 text-sm text-blue-200">
+          <span class="flex items-center gap-1">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>
+            500+ EPG Sites
+          </span>
+          <span class="flex items-center gap-1">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>
+            Instant Search
+          </span>
+          <span class="flex items-center gap-1">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>
+            One-Click Copy
+          </span>
+          <span class="flex items-center gap-1">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>
+            100% Free
+          </span>
+        </div>
+
+        <div class="text-xs text-blue-300/60">
+          Last updated: <span id="lastUpdate">-</span> | 
+          Data from <a href="https://github.com/dj1p/epg" target="_blank" class="underline hover:text-blue-200">dj1p/epg</a>
+        </div>
+      </div>
+
+      <!-- Ad Space (Top Banner) -->
+      <div class="mb-6 flex justify-center">
+        <!-- Google AdSense Banner Ad - Replace with your ad code -->
+        <!-- <ins class="adsbygoogle"
+             style="display:block"
+             data-ad-client="ca-pub-XXXXXXXXXX"
+             data-ad-slot="XXXXXXXXXX"
+             data-ad-format="auto"
+             data-full-width-responsive="true"></ins> -->
+        <div class="bg-white/5 border border-white/10 rounded-lg p-6 text-center text-blue-300/60 text-sm">
+          Advertisement Space
         </div>
       </div>
 
@@ -64,7 +130,7 @@
               </svg>
               Search Channels
             </label>
-            <input type="text" id="searchInput" placeholder="Channel name, country, or ID..."
+            <input type="text" id="searchInput" placeholder="Channel name, country, or XMLTV ID..."
                    class="w-full px-4 py-2 rounded-lg bg-white/10 border border-white/30 text-white placeholder-blue-300/50 focus:outline-none focus:ring-2 focus:ring-blue-400">
           </div>
 
@@ -74,7 +140,7 @@
               <svg class="inline w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
               </svg>
-              Site
+              EPG Site
             </label>
             <select id="siteFilter" class="w-full px-4 py-2 rounded-lg bg-white/10 border border-white/30 text-white focus:outline-none focus:ring-2 focus:ring-blue-400">
               <option value="">All Sites</option>
@@ -114,10 +180,33 @@
       <!-- Channel List -->
       <div id="channelList" class="space-y-3"></div>
 
+      <!-- Pagination -->
+      <div id="pagination"></div>
+
       <!-- No Results -->
       <div id="noResults" class="hidden bg-white/10 backdrop-blur-lg rounded-xl p-8 text-center text-blue-200">
         No channels found matching your criteria.
       </div>
+
+      <!-- Ad Space (Bottom Banner) -->
+      <div class="mt-8 flex justify-center">
+        <div class="bg-white/5 border border-white/10 rounded-lg p-6 text-center text-blue-300/60 text-sm w-full">
+          Advertisement Space
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <footer class="mt-12 text-center text-blue-300/60 text-sm pb-8">
+        <p class="mb-2">
+          © 2025 EPG Channel Browser | Built with ❤️ for the IPTV community
+        </p>
+        <p>
+          Found this useful? 
+          <a href="https://www.paypal.com/donate/?business=L67GASE23ELRA&currency_code=USD" target="_blank" class="text-yellow-400 hover:text-yellow-300 underline">
+            Buy me a coffee ☕
+          </a>
+        </p>
+      </footer>
     </div>
   </div>
 
