@@ -131,11 +131,34 @@ function generateXMLLine(channel) {
   return `<channel site="${channel.site}" lang="${channel.lang}" xmltv_id="${channel.xmltv_id}" site_id="${channel.site_id}">${channel.name}</channel>`;
 }
 
-// Get logo URL from tvlogos.austheim.app
+// Get logo URL using multiple fallback sources
 function getLogoUrl(channelName, xmltvId) {
-  // Clean channel name for logo matching
+  // Primary: Use iptv-org logo API (most reliable)
+  if (xmltvId) {
+    // iptv-org uses xmltv_id for logo matching
+    return `https://iptv-org.github.io/iptv/logos/${xmltvId}.png`;
+  }
+  
+  // Fallback: Try tvlogos.austheim.app
   const cleanName = channelName.replace(/[^\w\s]/gi, '').trim().replace(/\s+/g, '-').toLowerCase();
   return `https://tvlogos.austheim.app/logos/${cleanName}.png`;
+}
+
+// Handle logo loading errors with multiple fallbacks
+function handleLogoError(img, channelName, xmltvId) {
+  // If primary source failed, try alternate sources
+  if (img.src.includes('iptv-org.github.io')) {
+    // Try tvlogos.austheim.app
+    const cleanName = channelName.replace(/[^\w\s]/gi, '').trim().replace(/\s+/g, '-').toLowerCase();
+    img.src = `https://tvlogos.austheim.app/logos/${cleanName}.png`;
+    img.onerror = () => handleLogoError2(img, channelName);
+  }
+}
+
+function handleLogoError2(img, channelName) {
+  // Final fallback: placeholder
+  img.src = 'https://via.placeholder.com/80/1e293b/667eea?text=' + encodeURIComponent(channelName.substring(0, 2).toUpperCase());
+  img.onerror = null; // Stop trying
 }
 
 // Copy to clipboard with animation
@@ -229,7 +252,7 @@ function renderChannels(channels) {
           <img src="${logoUrl}" 
                alt="${escapeHtml(channel.name)}" 
                class="w-20 h-20 object-contain bg-white/5 rounded-lg p-2"
-               onerror="this.src='https://via.placeholder.com/80/1e293b/667eea?text=TV'"
+               onerror="handleLogoError(this, '${escapeHtml(channel.name)}', '${escapeHtml(channel.xmltv_id)}')"
                loading="lazy">
         </div>
         
