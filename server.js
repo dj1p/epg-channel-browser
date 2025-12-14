@@ -333,6 +333,33 @@ app.post('/api/refresh', async (req, res) => {
   }
 });
 
+// API endpoint to report channel issues
+app.post('/api/report', (req, res) => {
+  try {
+    const { channel_id, xmltv_id, channel_name, site, reason } = req.body;
+    
+    if (!reason || reason.trim() === '') {
+      return res.status(400).json({ error: 'Reason is required' });
+    }
+    
+    const stmt = db.prepare(`
+      INSERT INTO reports (channel_id, xmltv_id, channel_name, site, reason)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    
+    stmt.run(channel_id, xmltv_id, channel_name, site, reason.trim());
+    
+    res.json({ success: true, message: 'Report submitted successfully' });
+    
+  } catch (error) {
+    console.error('Error in /api/report:', error);
+    res.status(500).json({ 
+      error: 'Failed to submit report',
+      message: error.message 
+    });
+  }
+});
+
 // Serve the frontend
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
