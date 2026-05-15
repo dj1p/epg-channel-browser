@@ -20,98 +20,94 @@ const el = {
   lastUpdate: document.getElementById('lastUpdate'),
 };
 
-async function fetchStats() {
+// Safe fetch wrapper — always returns parsed JSON or an error object,
+// never throws even if the server returns HTML or times out.
+async function safeFetch(url, options = {}) {
   try {
-    const data = await fetch('/api/stats').then(r => r.json());
+    const resp = await fetch(url, options);
+    const text = await resp.text();
+    try {
+      return { ok: resp.ok, status: resp.status, data: JSON.parse(text) };
+    } catch (e) {
+      // Server returned non-JSON (HTML error page, proxy timeout, etc.)
+      console.error(`Non-JSON response from ${url} (${resp.status}):`, text.substring(0, 200));
+      return { ok: false, status: resp.status, data: { error: `Server error ${resp.status}`, message: text.substring(0, 200) } };
+    }
+  } catch (e) {
+    // Network error
+    return { ok: false, status: 0, data: { error: 'Network error', message: e.message } };
+  }
+}
+
+async function fetchStats() {
+  const { data } = await safeFetch('/api/stats');
+  if (data.totalChannels !== undefined) {
     el.channelCount.textContent = data.totalChannels.toLocaleString();
     el.totalCount.textContent = data.totalChannels.toLocaleString();
     if (data.lastUpdate) el.lastUpdate.textContent = new Date(data.lastUpdate).toLocaleString();
-    return data;
-  } catch (e) {
-    console.error('fetchStats:', e);
-    return {};
   }
+  return data;
 }
 
 async function fetchFilters() {
-  try {
-    const data = await fetch('/api/filters').then(r => r.json());
-    el.siteFilter.innerHTML = '<option value="">All Sites</option>';
-    (data.sites || []).forEach(s => {
-      const o = document.createElement('option');
-      o.value = s; o.textContent = s;
-      el.siteFilter.appendChild(o);
-    });
-    el.langFilter.innerHTML = '<option value="">All Languages</option>';
-    (data.languages || []).forEach(l => {
-      const o = document.createElement('option');
-      o.value = l; o.textContent = l.toUpperCase();
-      el.langFilter.appendChild(o);
-    });
-  } catch (e) {
-    console.error('fetchFilters:', e);
-  }
+  const { data } = await safeFetch('/api/filters');
+  if (!data.sites) return;
+  el.siteFilter.innerHTML = '<option value="">All Sites</option>';
+  (data.sites || []).forEach(s => {
+    const o = document.createElement('option');
+    o.value = s; o.textContent = s;
+    el.siteFilter.appendChild(o);
+  });
+  el.langFilter.innerHTML = '<option value="">All Languages</option>';
+  (data.languages || []).forEach(l => {
+    const o = document.createElement('option');
+    o.value = l; o.textContent = l.toUpperCase();
+    el.langFilter.appendChild(o);
+  });
 }
 
 async function fetchChannels() {
-  try {
-    const params = new URLSearchParams({ page: currentPage, limit: pageSize });
-    const search = el.searchInput.value;
-    const site = el.siteFilter.value;
-    const lang = el.langFilter.value;
-    if (search) params.append('search', search);
-    if (site) params.append('site', site);
-    if (lang) params.append('lang', lang);
+  const params = new URLSearchParams({ page: currentPage, limit: pageSize });
+  const search = el.searchInput.value;
+  const site = el.siteFilter.value;
+  const lang = el.langFilter.value;
+  if (search) params.append('search', search);
+  if (site) params.append('site', site);
+  if (lang) params.append('lang', lang);
 
-    const resp = await fetch(`/api/channels?${params}`);
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.message || 'Server error');
-
-    totalPages = data.pagination.totalPages;
-    totalCount = data.pagination.totalCount;
-    el.resultCount.textContent = totalCount.toLocaleString();
-
-    renderChannels(data.channels);
-    renderPagination();
-
-    if (data.lastUpdate) el.lastUpdate.textContent = new Date(data.lastUpdate).toLocaleString();
-    el.loading.classList.add('hidden');
-    el.content.classList.remove('hidden');
-  } catch (e) {
-    console.error('fetchChannels:', e);
+  const { ok, data } = await safeFetch(`/api/channels?${params}`);
+  if (!ok || !data.channels) {
     el.loading.innerHTML = `
       <div class="text-white text-center">
         <p class="text-xl mb-2">Failed to load channels</p>
-        <p class="text-sm text-blue-300 mb-4">${escHtml(e.message)}</p>
+        <p class="text-sm text-blue-300 mb-4">${escHtml(data.message || data.error || 'Unknown error')}</p>
         <button onclick="location.reload()" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg">Retry</button>
       </div>`;
+    return;
   }
+
+  totalPages = data.pagination.totalPages;
+  totalCount = data.pagination.totalCount;
+  el.resultCount.textContent = totalCount.toLocaleString();
+
+  renderChannels(data.channels);
+  renderPagination();
+
+  if (data.lastUpdate) el.lastUpdate.textContent = new Date(data.lastUpdate).toLocaleString();
+  el.loading.classList.add('hidden');
+  el.content.classList.remove('hidden');
 }
 
 function xmlLine(ch) {
   return `<channel site="${ch.site}" lang="${ch.lang}" xmltv_id="${ch.xmltv_id}" site_id="${ch.site_id}">${ch.name}</channel>`;
 }
 
-/**
- * Get logo src for a channel.
- * 1. Use the URL stored in DB — set at import time from logos-manifest.json
- *    (these are tvlogos.austheim.app/countries/... URLs)
- * 2. Fallback: derive a slug-based URL from channel name + country code
- */
 function getLogoSrc(ch) {
   if (ch.logo && ch.logo.trim()) return ch.logo;
-
-  // Derive slug fallback: "Frikanalen" + xmltv "Frikanalen.no@SD" -> frikanalen-no
   const ccMatch = (ch.xmltv_id || '').match(/\.([a-z]{2,3})(?:@|$)/i);
   const cc = ccMatch ? ccMatch[1].toLowerCase() : '';
-  const slug = ch.name.toLowerCase()
-    .replace(/&/g, 'and')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  const slug = ch.name.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   const withCc = cc ? `${slug}-${cc}` : slug;
-
-  // We don't know the country subfolder, so try a few likely paths on tvlogos.austheim.app
-  // The server-side match is more reliable; this is just a browser-side last attempt
   return `https://tvlogos.austheim.app/logos/${withCc}.png`;
 }
 
@@ -128,17 +124,13 @@ function makePlaceholder(name) {
 function handleLogoError(img, name, xmltvId) {
   const tried = parseInt(img.getAttribute('data-tried') || '0');
   img.setAttribute('data-tried', tried + 1);
-
   if (tried === 0) {
-    // Try name-only slug
     const slug = name.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     img.src = `https://tvlogos.austheim.app/logos/${slug}.png`;
-  } else if (tried === 1) {
-    // Try xmltv_id-derived slug
-    const slug = (xmltvId || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  } else if (tried === 1 && xmltvId) {
+    const slug = xmltvId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     img.src = `https://tvlogos.austheim.app/logos/${slug}.png`;
   } else {
-    // Final: SVG initials placeholder
     img.src = makePlaceholder(name);
     img.onerror = null;
   }
@@ -169,13 +161,11 @@ async function reportChannel(encoded) {
   const ch = JSON.parse(decodeURIComponent(encoded));
   const reason = prompt(`Report "${ch.name}"?\n\nDescribe the issue:`);
   if (!reason?.trim()) return;
-  try {
-    const r = await fetch('/api/report', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel_id: ch.id, xmltv_id: ch.xmltv_id, channel_name: ch.name, site: ch.site, reason: reason.trim() })
-    });
-    alert(r.ok ? 'Report submitted!' : 'Failed to submit report.');
-  } catch (e) { alert('Failed.'); }
+  const { ok } = await safeFetch('/api/report', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel_id: ch.id, xmltv_id: ch.xmltv_id, channel_name: ch.name, site: ch.site, reason: reason.trim() })
+  });
+  alert(ok ? 'Report submitted!' : 'Failed to submit report.');
 }
 
 function renderChannels(channels) {
@@ -191,13 +181,11 @@ function renderChannels(channels) {
     const logo = getLogoSrc(ch);
     const line = xmlLine(ch);
     const encoded = encodeURIComponent(JSON.stringify(ch));
-
     return `
     <div class="bg-white/10 backdrop-blur-lg rounded-xl p-5 shadow-lg border border-white/20 hover:bg-white/15 transition">
       <div class="flex flex-col md:flex-row gap-4">
         <div class="flex-shrink-0">
-          <img src="${escHtml(logo)}"
-               alt="${escHtml(ch.name)}"
+          <img src="${escHtml(logo)}" alt="${escHtml(ch.name)}"
                class="w-20 h-20 object-contain bg-white/5 rounded-lg p-2"
                onerror="handleLogoError(this, ${JSON.stringify(ch.name)}, ${JSON.stringify(ch.xmltv_id)})"
                loading="lazy">
@@ -212,30 +200,22 @@ function renderChannels(channels) {
           <div class="flex flex-wrap gap-2">
             <button onclick='copyToClipboard(${JSON.stringify(line)}, this, "source")'
                     class="flex items-center gap-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
-              </svg>
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
               Copy Source
             </button>
             <button onclick='copyToClipboard(${JSON.stringify(ch.xmltv_id)}, this, "xmltv")'
                     class="flex items-center gap-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm rounded-lg transition">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"></path>
-              </svg>
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"></path></svg>
               XMLTV ID
             </button>
             <button onclick='copyToClipboard(${JSON.stringify(ch.site_id)}, this, "siteid")'
                     class="flex items-center gap-1 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white text-sm rounded-lg transition">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path>
-              </svg>
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
               Site ID
             </button>
             <button onclick='reportChannel("${encoded}")'
                     class="flex items-center gap-1 px-4 py-2 bg-red-600/20 hover:bg-red-600/40 text-red-300 text-sm rounded-lg transition border border-red-500/30">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
-              </svg>
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
               Report
             </button>
           </div>
@@ -298,24 +278,62 @@ function handleFilterChange() {
   searchTimer = setTimeout(fetchChannels, 300);
 }
 
+// Refresh now runs in the background on the server.
+// We kick it off, then poll /api/stats every 5s until it's done.
+let refreshPollTimer = null;
+
 async function refreshData() {
   el.refreshBtn.disabled = true;
-  el.refreshBtn.textContent = 'Refreshing… (2-10 min)';
-  try {
-    const resp = await fetch('/api/refresh', { method: 'POST' });
-    const data = await resp.json();
-    if (data.success) {
-      await fetchStats(); await fetchFilters(); currentPage = 1; await fetchChannels();
-      alert(`Refreshed! ${data.channelCount.toLocaleString()} channels loaded.`);
-    } else {
-      alert('Refresh failed: ' + (data.message || data.error));
-    }
-  } catch (e) {
-    alert('Refresh failed: ' + e.message);
-  } finally {
+  el.refreshBtn.textContent = 'Starting refresh…';
+
+  const { ok, data } = await safeFetch('/api/refresh', { method: 'POST' });
+
+  if (!ok) {
+    alert('Failed to start refresh: ' + (data.message || data.error || 'Unknown error'));
     el.refreshBtn.disabled = false;
     el.refreshBtn.textContent = 'Refresh Data';
+    return;
   }
+
+  if (data.refreshRunning === false && data.channelCount) {
+    // Completed synchronously (shouldn't happen but handle it)
+    await fetchStats(); await fetchFilters(); currentPage = 1; await fetchChannels();
+    el.refreshBtn.disabled = false;
+    el.refreshBtn.textContent = 'Refresh Data';
+    return;
+  }
+
+  // Poll until done
+  el.refreshBtn.textContent = 'Refreshing… (polling)';
+  pollRefreshStatus();
+}
+
+function pollRefreshStatus() {
+  clearTimeout(refreshPollTimer);
+  refreshPollTimer = setTimeout(async () => {
+    const { data } = await safeFetch('/api/stats');
+
+    if (data.refreshRunning) {
+      // Still running — update button with progress and keep polling
+      const progress = data.refreshProgress || '';
+      el.refreshBtn.textContent = `Refreshing… ${progress}`;
+      pollRefreshStatus();
+    } else {
+      // Done
+      el.refreshBtn.disabled = false;
+      el.refreshBtn.textContent = 'Refresh Data';
+
+      if (data.lastError) {
+        alert('Refresh failed: ' + data.lastError);
+      } else {
+        await fetchStats();
+        await fetchFilters();
+        currentPage = 1;
+        await fetchChannels();
+        alert(`Refresh complete! ${(data.totalChannels || 0).toLocaleString()} channels loaded.`);
+      }
+    }
+  }, 5000); // poll every 5 seconds
 }
 
 el.searchInput.addEventListener('input', handleFilterChange);
@@ -325,7 +343,15 @@ el.resetBtn.addEventListener('click', resetFilters);
 el.refreshBtn.addEventListener('click', refreshData);
 
 (async function init() {
-  await fetchStats();
+  const stats = await fetchStats();
+
+  // If a refresh is already running (e.g. initial startup fetch), start polling
+  if (stats.refreshRunning) {
+    el.refreshBtn.disabled = true;
+    el.refreshBtn.textContent = 'Refreshing… (polling)';
+    pollRefreshStatus();
+  }
+
   await fetchFilters();
   await fetchChannels();
 })();
