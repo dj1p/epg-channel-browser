@@ -241,48 +241,48 @@ async function fetchAndStoreChannels() {
   const parser = new xml2js.Parser();
 
   let total = 0, ok = 0, errors = 0;
-  const batchSize = GITHUB_TOKEN ? 10 : 3;
 
-  for (let i = 0; i < channelFiles.length; i += batchSize) {
-    const batch = channelFiles.slice(i, i + batchSize);
-    await Promise.all(batch.map(async (file) => {
-      try {
-        const url = `https://raw.githubusercontent.com/${EPG_REPO}/${epgBranch}/${file.path}`;
-        const xml = await axios.get(url, { headers: { 'User-Agent': 'EPG-Browser/2.0' }, timeout: 15000 });
-        const parsed = await parser.parseStringPromise(xml.data);
-        if (parsed.channels?.channel) {
-          const siteName = file.path.split('/')[1];
-          db.transaction((channels) => {
-            for (const ch of channels) {
-              const xmltvId = ch.$.xmltv_id || '';
-              const name = ch._ || ch.$.xmltv_id || 'Unknown';
-              const { country, cc } = detectCountry(xmltvId, siteName);
-              const logo = findLogo(logoMap, name, xmltvId, cc);
-              insert.run(ch.$.site || siteName, ch.$.lang || 'en', xmltvId, ch.$.site_id || '', name, country, logo);
-              total++;
-            }
-          })(parsed.channels.channel);
-          ok++;
-        }
-      } catch (err) {
-        errors++;
-        if ([403, 429].includes(err.response?.status)) {
-          console.error(`Rate limited on ${file.path} — add GITHUB_TOKEN`);
-        } else {
-          console.error(`Error on ${file.path}: ${err.message}`);
-        }
+  // Process files sequentially — avoids memory spikes from parallel XML parsing
+  // that caused the container to be killed mid-run. With a token this still
+  // completes in ~10-15 min for 500+ files.
+  for (let i = 0; i < channelFiles.length; i++) {
+    const file = channelFiles[i];
+    try {
+      const url = `https://raw.githubusercontent.com/${EPG_REPO}/${epgBranch}/${file.path}`;
+      const xml = await axios.get(url, { headers: { 'User-Agent': 'EPG-Browser/2.0' }, timeout: 15000 });
+      const parsed = await parser.parseStringPromise(xml.data);
+      if (parsed.channels?.channel) {
+        const siteName = file.path.split('/')[1];
+        db.transaction((channels) => {
+          for (const ch of channels) {
+            const xmltvId = ch.$.xmltv_id || '';
+            const name = ch._ || ch.$.xmltv_id || 'Unknown';
+            const { country, cc } = detectCountry(xmltvId, siteName);
+            const logo = findLogo(logoMap, name, xmltvId, cc);
+            insert.run(ch.$.site || siteName, ch.$.lang || 'en', xmltvId, ch.$.site_id || '', name, country, logo);
+            total++;
+          }
+        })(parsed.channels.channel);
+        ok++;
       }
-    }));
-
-    // Update progress in metadata so the UI can poll it
-    if (i % (batchSize * 5) === 0) {
-      const pct = Math.round((i / channelFiles.length) * 100);
-      setMeta.run('refresh_progress', `${pct}% (${total} channels, ${errors} errors)`);
-      console.log(`Progress: ${Math.min(i + batchSize, channelFiles.length)}/${channelFiles.length} | ${total} channels | ${errors} errors`);
+    } catch (err) {
+      errors++;
+      if ([403, 429].includes(err.response?.status)) {
+        console.error(`Rate limited on ${file.path}`);
+      } else {
+        console.error(`Error on ${file.path}: ${err.message}`);
+      }
     }
 
-    if (i + batchSize < channelFiles.length) {
-      await new Promise(r => setTimeout(r, GITHUB_TOKEN ? 300 : 2000));
+    // Update progress every 10 files
+    if (i % 10 === 0) {
+      const pct = Math.round((i / channelFiles.length) * 100);
+      setMeta.run('refresh_progress', `${pct}% — ${i}/${channelFiles.length} files, ${total} channels`);
+      setMeta.run('files_processed', ok.toString());
+      setMeta.run('files_errored', errors.toString());
+      if (i % 50 === 0) {
+        console.log(`Progress: ${i}/${channelFiles.length} files | ${total} channels | ${errors} errors`);
+      }
     }
   }
 
