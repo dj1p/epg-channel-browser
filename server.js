@@ -61,6 +61,15 @@ db.exec(`
 `);
 try { db.exec(`ALTER TABLE channels ADD COLUMN logo TEXT DEFAULT ''`); } catch (e) {}
 
+// Track background refresh state so the UI can poll it
+let refreshState = {
+  running: false,
+  startedAt: null,
+  finishedAt: null,
+  error: null,
+  channelCount: null,
+};
+
 const countryMapping = {
   'us': 'United States', 'uk': 'United Kingdom', 'ca': 'Canada',
   'au': 'Australia',     'de': 'Germany',         'fr': 'France',
@@ -78,25 +87,15 @@ const countryMapping = {
   'id': 'Indonesia',     'ph': 'Philippines',      'vn': 'Vietnam',
 };
 
-/**
- * Detect country code (2-letter) from xmltv_id and site domain.
- * Returns { country: "Thailand", cc: "th" }
- *
- * FIX: The old code used substring matching on the site name, which caused
- * false positives — e.g. "gigatv.3bbtv.co.th" matched "at" inside "gigatv".
- * Now we split on dots and check exact domain PARTS, so ".th" only matches
- * when "th" is an actual domain part like co.th or .th TLD.
- */
 function detectCountry(xmltvId, siteName) {
-  // 1. Try xmltv_id suffix: "CNN.us" -> "us", "Frikanalen.no@SD" -> "no"
+  // 1. xmltv_id suffix: "CNN.us" -> "us", "Frikanalen.no@SD" -> "no"
   const xmltvCc = (xmltvId.match(/\.([a-z]{2,3})(?:@|$)/i) || [])[1]?.toLowerCase();
   if (xmltvCc && countryMapping[xmltvCc]) {
     return { country: countryMapping[xmltvCc], cc: xmltvCc };
   }
 
-  // 2. Try site domain parts: "gigatv.3bbtv.co.th" -> ["gigatv","3bbtv","co","th"]
-  //    Check each part as an exact match against country codes.
-  //    Prioritise TLD (last part), then second-to-last, etc.
+  // 2. Domain parts right-to-left: "gigatv.3bbtv.co.th" -> "th" = Thailand
+  //    (avoids false substring matches like "at" inside "gigatv")
   const domainParts = siteName.toLowerCase().replace(/\/.*$/, '').split('.');
   for (let i = domainParts.length - 1; i >= 0; i--) {
     const part = domainParts[i];
@@ -105,7 +104,7 @@ function detectCountry(xmltvId, siteName) {
     }
   }
 
-  // 3. Try xmltv_id substring as last resort (for IDs like "SomeChannel.co.uk")
+  // 3. Substring fallback for IDs like "SomeChannel.co.uk"
   for (const [cc, country] of Object.entries(countryMapping)) {
     if (xmltvId.toLowerCase().includes('.' + cc)) {
       return { country, cc };
@@ -136,19 +135,6 @@ async function detectBranch(repo) {
   }
 }
 
-/**
- * Fetch logos-manifest.json from tvlogos.austheim.app.
- *
- * Manifest structure (from generate_manifest.py):
- * {
- *   "logos": [
- *     { "name": "frikanalen-no.png", "path": "/countries/nordic/norway/frikanalen-no.png", "country": "nordic/norway" },
- *     { "name": "cnn-us.png",        "path": "/countries/united-states/cnn-us.png",        "country": "united-states" }
- *   ]
- * }
- *
- * We build: logoMap["frikanalen-no"] = "https://tvlogos.austheim.app/countries/nordic/norway/frikanalen-no.png"
- */
 async function fetchLogoManifest() {
   console.log('Fetching logos-manifest.json from tvlogos.austheim.app...');
   try {
@@ -156,16 +142,13 @@ async function fetchLogoManifest() {
       timeout: 30000,
       headers: { 'User-Agent': 'EPG-Browser/2.0' }
     });
-
     const entries = resp.data.logos || [];
     const logoMap = {};
-
     for (const entry of entries) {
       if (!entry?.name?.toLowerCase().endsWith('.png') || !entry.path) continue;
       const stem = entry.name.replace(/\.png$/i, '').toLowerCase();
       logoMap[stem] = `${TVLOGOS_BASE}${entry.path}`;
     }
-
     console.log(`Logo manifest loaded: ${Object.keys(logoMap).length} logos`);
     return logoMap;
   } catch (err) {
@@ -174,53 +157,34 @@ async function fetchLogoManifest() {
   }
 }
 
-/**
- * Find a logo for a channel.
- *
- * tvlogos naming convention: {channel-slug}-{cc}.png
- * e.g. frikanalen-no.png, cnn-us.png, cartoonito-th.png
- *
- * We now pass in `cc` (derived from detectCountry) so channels with empty
- * xmltv_id still get the right country code from their site domain.
- */
 function findLogo(logoMap, channelName, xmltvId, cc) {
   if (!logoMap || Object.keys(logoMap).length === 0) return '';
 
   function toSlug(str) {
-    return str
-      .toLowerCase()
-      .replace(/&/g, 'and')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '');
+    return str.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   }
 
-  // cc from xmltv_id takes priority over site-derived cc
   const xmltvCc = (xmltvId.match(/\.([a-z]{2,3})(?:@|$)/i) || [])[1]?.toLowerCase();
   const effectiveCc = xmltvCc || cc;
-
   const xmltvBase = xmltvId.replace(/\.[a-z]{2,3}(@.*)?$/i, '');
   const nameSlug = toSlug(channelName);
   const xmltvSlug = toSlug(xmltvBase);
 
   const candidates = [];
   if (effectiveCc) {
-    candidates.push(`${nameSlug}-${effectiveCc}`);           // cartoonito-th  ✓
-    if (xmltvSlug && xmltvSlug !== nameSlug) {
-      candidates.push(`${xmltvSlug}-${effectiveCc}`);
-    }
+    candidates.push(`${nameSlug}-${effectiveCc}`);
+    if (xmltvSlug && xmltvSlug !== nameSlug) candidates.push(`${xmltvSlug}-${effectiveCc}`);
   }
-  if (xmltvId) candidates.push(toSlug(xmltvId));             // full xmltv_id slug
-  candidates.push(nameSlug);                                 // name only (last resort)
+  if (xmltvId) candidates.push(toSlug(xmltvId));
+  candidates.push(nameSlug);
   if (xmltvSlug && xmltvSlug !== nameSlug) candidates.push(xmltvSlug);
 
   for (const c of candidates) {
     if (c && logoMap[c]) return logoMap[c];
   }
 
-  // Prefix match only when we have a cc — avoids wrong-country matches
+  // Prefix match only when we have a cc to avoid wrong-country matches
   if (effectiveCc) {
-    const prefixWithCc = `${nameSlug}-${effectiveCc}`;
-    // Already tried exact match above; try prefix of the stem
     const hit = Object.keys(logoMap).find(k =>
       k.startsWith(nameSlug + '-') && k.endsWith('-' + effectiveCc)
     );
@@ -235,6 +199,8 @@ async function fetchAndStoreChannels() {
   if (!GITHUB_TOKEN) {
     console.warn('No GITHUB_TOKEN — only 60 GitHub API req/hour. Set in Coolify env vars for 5000/hr.');
   }
+
+  const setMeta = db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
 
   const [epgBranch, logoMap] = await Promise.all([
     detectBranch(EPG_REPO),
@@ -285,7 +251,7 @@ async function fetchAndStoreChannels() {
         const xml = await axios.get(url, { headers: { 'User-Agent': 'EPG-Browser/2.0' }, timeout: 15000 });
         const parsed = await parser.parseStringPromise(xml.data);
         if (parsed.channels?.channel) {
-          const siteName = file.path.split('/')[1];  // e.g. "gigatv.3bbtv.co.th"
+          const siteName = file.path.split('/')[1];
           db.transaction((channels) => {
             for (const ch of channels) {
               const xmltvId = ch.$.xmltv_id || '';
@@ -308,19 +274,23 @@ async function fetchAndStoreChannels() {
       }
     }));
 
-    if (i % (batchSize * 10) === 0) {
+    // Update progress in metadata so the UI can poll it
+    if (i % (batchSize * 5) === 0) {
+      const pct = Math.round((i / channelFiles.length) * 100);
+      setMeta.run('refresh_progress', `${pct}% (${total} channels, ${errors} errors)`);
       console.log(`Progress: ${Math.min(i + batchSize, channelFiles.length)}/${channelFiles.length} | ${total} channels | ${errors} errors`);
     }
+
     if (i + batchSize < channelFiles.length) {
       await new Promise(r => setTimeout(r, GITHUB_TOKEN ? 300 : 2000));
     }
   }
 
-  const meta = db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
-  meta.run('last_update', new Date().toISOString());
-  meta.run('files_processed', ok.toString());
-  meta.run('files_errored', errors.toString());
-  meta.run('last_error', '');
+  setMeta.run('last_update', new Date().toISOString());
+  setMeta.run('files_processed', ok.toString());
+  setMeta.run('files_errored', errors.toString());
+  setMeta.run('last_error', '');
+  setMeta.run('refresh_progress', 'complete');
   console.log(`=== Done: ${total} channels from ${ok}/${channelFiles.length} files (${errors} errors) ===`);
   return total;
 }
@@ -375,20 +345,52 @@ app.get('/api/stats', (req, res) => {
       filesErrored: parseInt(g('files_errored') || 0),
       lastError: g('last_error') || '',
       hasGithubToken: !!GITHUB_TOKEN,
+      refreshRunning: refreshState.running,
+      refreshProgress: g('refresh_progress') || '',
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch stats', message: err.message });
   }
 });
 
-app.post('/api/refresh', async (req, res) => {
-  try {
-    const count = await fetchAndStoreChannels();
-    res.json({ success: true, channelCount: count, lastUpdate: new Date().toISOString() });
-  } catch (err) {
-    db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run('last_error', err.message);
-    res.status(500).json({ error: 'Failed to refresh', message: err.message });
+// Refresh runs in the BACKGROUND — responds immediately so the proxy doesn't time out.
+// The UI polls /api/stats to track progress.
+app.post('/api/refresh', (req, res) => {
+  if (refreshState.running) {
+    return res.json({
+      success: false,
+      message: 'Refresh already in progress. Poll /api/stats for progress.',
+      refreshRunning: true,
+    });
   }
+
+  // Respond immediately — job runs in background
+  refreshState.running = true;
+  refreshState.startedAt = new Date().toISOString();
+  refreshState.error = null;
+  refreshState.channelCount = null;
+
+  res.json({
+    success: true,
+    message: 'Refresh started in background. Poll /api/stats for progress.',
+    refreshRunning: true,
+  });
+
+  // Run async without awaiting — fire and forget
+  fetchAndStoreChannels()
+    .then(count => {
+      refreshState.running = false;
+      refreshState.finishedAt = new Date().toISOString();
+      refreshState.channelCount = count;
+      console.log(`Background refresh complete: ${count} channels`);
+    })
+    .catch(err => {
+      refreshState.running = false;
+      refreshState.error = err.message;
+      console.error('Background refresh failed:', err.message);
+      db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)')
+        .run('last_error', err.message);
+    });
 });
 
 app.post('/api/report', (req, res) => {
@@ -410,14 +412,21 @@ app.listen(PORT, async () => {
 
   const count = db.prepare('SELECT COUNT(*) as count FROM channels').get().count;
   if (count === 0) {
-    console.log('DB empty — running initial fetch...');
-    try {
-      await fetchAndStoreChannels();
-      console.log('Ready!');
-    } catch (err) {
-      console.error('Initial fetch failed:', err.message);
-      db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run('last_error', err.message);
-    }
+    console.log('DB empty — running initial fetch in background...');
+    refreshState.running = true;
+    refreshState.startedAt = new Date().toISOString();
+    fetchAndStoreChannels()
+      .then(c => {
+        refreshState.running = false;
+        refreshState.channelCount = c;
+        console.log('Ready!');
+      })
+      .catch(err => {
+        refreshState.running = false;
+        refreshState.error = err.message;
+        console.error('Initial fetch failed:', err.message);
+        db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run('last_error', err.message);
+      });
   } else {
     console.log(`DB has ${count} channels — ready!`);
   }
