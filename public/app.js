@@ -295,7 +295,7 @@ async function refreshData() {
     return;
   }
 
-  if (data.refreshRunning === false && data.channelCount) {
+  if (data.refreshRunning === false) {
     // Completed synchronously (shouldn't happen but handle it)
     await fetchStats(); await fetchFilters(); currentPage = 1; await fetchChannels();
     el.refreshBtn.disabled = false;
@@ -326,11 +326,11 @@ function pollRefreshStatus() {
       if (data.lastError) {
         alert('Refresh failed: ' + data.lastError);
       } else {
-        await fetchStats();
+        const freshStats = await fetchStats();
         await fetchFilters();
         currentPage = 1;
         await fetchChannels();
-        alert(`Refresh complete! ${(data.totalChannels || 0).toLocaleString()} channels loaded.`);
+        alert(`Refresh complete! ${(freshStats.totalChannels || 0).toLocaleString()} channels loaded.`);
       }
     }
   }, 5000); // poll every 5 seconds
