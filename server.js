@@ -11,9 +11,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 
-// Your two repos
 const EPG_REPO = 'dj1p/epg';
-const TVLOGOS_RAW_BASE = 'https://raw.githubusercontent.com/dj1p/tvlogos/main';
+// Logos are served from your deployed tvlogos site, NOT raw.githubusercontent.com
+const TVLOGOS_BASE = 'https://tvlogos.austheim.app';
 
 app.use(cors());
 app.use(express.json());
@@ -60,11 +60,8 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
-
-// Migration: add logo column if missing
 try { db.exec(`ALTER TABLE channels ADD COLUMN logo TEXT DEFAULT ''`); } catch (e) {}
 
-// Country mapping
 const countryMapping = {
   '.us': 'United States', '.uk': 'United Kingdom', '.ca': 'Canada',
   '.au': 'Australia', '.de': 'Germany', '.fr': 'France', '.es': 'Spain',
@@ -81,14 +78,14 @@ const countryMapping = {
 };
 
 function detectCountry(xmltvId, siteName) {
-  for (const [suffix, country] of Object.entries(countryMapping)) {
-    if (xmltvId.toLowerCase().endsWith(suffix)) return country;
+  for (const [s, c] of Object.entries(countryMapping)) {
+    if (xmltvId.toLowerCase().endsWith(s)) return c;
   }
-  for (const [suffix, country] of Object.entries(countryMapping)) {
-    if (xmltvId.toLowerCase().includes(suffix)) return country;
+  for (const [s, c] of Object.entries(countryMapping)) {
+    if (xmltvId.toLowerCase().includes(s)) return c;
   }
-  for (const [suffix, country] of Object.entries(countryMapping)) {
-    if (siteName.includes(suffix.substring(1))) return country;
+  for (const [s, c] of Object.entries(countryMapping)) {
+    if (siteName.includes(s.substring(1))) return c;
   }
   return 'International';
 }
@@ -115,40 +112,44 @@ async function detectBranch(repo) {
 }
 
 /**
- * Fetch logos-manifest.json from dj1p/tvlogos.
- * The manifest is an array of objects: { name, path, download_url, ... }
- * or possibly just an array of path strings.
- * We build a map: lowercase-stem -> raw URL
- * e.g. "bbc-one-uk" -> "https://raw.githubusercontent.com/dj1p/tvlogos/main/countries/united-kingdom/bbc-one-uk.png"
+ * Fetch logos-manifest.json from tvlogos.austheim.app.
+ *
+ * The manifest structure (from generate_manifest.py) is:
+ * {
+ *   "generated": "auto",
+ *   "total": 51706,
+ *   "logos": [
+ *     { "name": "frikanalen-no.png", "path": "/countries/nordic/norway/frikanalen-no.png", "country": "nordic/norway" },
+ *     ...
+ *   ]
+ * }
+ *
+ * Logo URL = TVLOGOS_BASE + entry.path
+ * e.g. https://tvlogos.austheim.app/countries/nordic/norway/frikanalen-no.png
+ *
+ * We build a map: filename-stem (lowercase, no .png) -> full URL
+ * e.g. "frikanalen-no" -> "https://tvlogos.austheim.app/countries/nordic/norway/frikanalen-no.png"
  */
 async function fetchLogoManifest() {
-  console.log('Fetching logos-manifest.json from dj1p/tvlogos...');
+  console.log('Fetching logos-manifest.json from tvlogos.austheim.app...');
   try {
-    const resp = await axios.get(`${TVLOGOS_RAW_BASE}/logos-manifest.json`, {
+    const resp = await axios.get(`${TVLOGOS_BASE}/logos-manifest.json`, {
       timeout: 30000,
       headers: { 'User-Agent': 'EPG-Browser/2.0' }
     });
+
     const manifest = resp.data;
+    // The logos array is under manifest.logos
+    const entries = manifest.logos || (Array.isArray(manifest) ? manifest : []);
+
     const logoMap = {};
-
-    // Handle both array-of-objects and array-of-strings
-    const entries = Array.isArray(manifest) ? manifest : Object.values(manifest).flat();
-
     for (const entry of entries) {
-      let filePath = '';
-      if (typeof entry === 'string') {
-        filePath = entry;
-      } else if (entry && typeof entry === 'object') {
-        // prefer the path field, fall back to name/url
-        filePath = entry.path || entry.name || '';
-      }
-      if (!filePath || !filePath.toLowerCase().endsWith('.png')) continue;
+      if (!entry || !entry.name || !entry.path) continue;
+      if (!entry.name.toLowerCase().endsWith('.png')) continue;
 
-      const fileName = filePath.split('/').pop();
-      const stem = fileName.replace(/\.png$/i, '').toLowerCase();
-      // Always build URL from the path in the manifest
-      const normPath = filePath.replace(/^\//, '');
-      logoMap[stem] = `${TVLOGOS_RAW_BASE}/${normPath}`;
+      const stem = entry.name.replace(/\.png$/i, '').toLowerCase();
+      // path already starts with /countries/... so just prepend base
+      logoMap[stem] = `${TVLOGOS_BASE}${entry.path}`;
     }
 
     console.log(`Logo manifest loaded: ${Object.keys(logoMap).length} logos`);
@@ -160,9 +161,8 @@ async function fetchLogoManifest() {
 }
 
 /**
- * Match a channel to a logo using the tvlogos naming convention:
- * Filenames are lowercase, spaces replaced with dashes, & replaced with and,
- * country code appended at end: e.g. "bbc-one-uk.png", "cnn-us.png"
+ * Find a logo for a channel using the tvlogos naming convention.
+ * Files are named: {channel-name}-{country-code}.png  e.g. frikanalen-no.png, cnn-us.png
  */
 function findLogo(logoMap, channelName, xmltvId) {
   if (!logoMap || Object.keys(logoMap).length === 0) return '';
@@ -175,38 +175,30 @@ function findLogo(logoMap, channelName, xmltvId) {
       .replace(/^-+|-+$/g, '');
   }
 
-  // Extract country code from end of xmltv_id e.g. "CNN.us" -> "us"
-  const ccMatch = xmltvId.match(/\.([a-z]{2,3})$/i);
+  // Extract country code from end of xmltv_id: "CNN.us" -> "us", "Frikanalen.no@SD" -> "no"
+  const ccMatch = xmltvId.match(/\.([a-z]{2,3})(?:@|$)/i);
   const cc = ccMatch ? ccMatch[1].toLowerCase() : null;
 
-  // xmltv_id without the country suffix
-  const xmltvBase = xmltvId.replace(/\.[a-z]{2,3}$/i, '');
-
+  const xmltvBase = xmltvId.replace(/\.[a-z]{2,3}(@.*)?$/i, ''); // strip ".no@SD" etc.
   const nameSlug = toSlug(channelName);
   const xmltvSlug = toSlug(xmltvBase);
 
   const candidates = [];
-
-  // 1. Full xmltv_id as slug (e.g. "bbc-one-uk" from "BBCOne.uk")
-  candidates.push(toSlug(xmltvId));
-
   if (cc) {
-    // 2. name-cc  (e.g. "cnn-us")
-    candidates.push(`${nameSlug}-${cc}`);
-    // 3. xmltvBase-cc
-    if (xmltvSlug !== nameSlug) candidates.push(`${xmltvSlug}-${cc}`);
+    candidates.push(`${nameSlug}-${cc}`);           // frikanalen-no  ✓
+    if (xmltvSlug !== nameSlug) {
+      candidates.push(`${xmltvSlug}-${cc}`);        // from xmltv id
+    }
   }
-
-  // 4. name only
-  candidates.push(nameSlug);
-  // 5. xmltv base only
+  candidates.push(toSlug(xmltvId));                 // full xmltv_id as slug
+  candidates.push(nameSlug);                        // name only
   if (xmltvSlug !== nameSlug) candidates.push(xmltvSlug);
 
   for (const c of candidates) {
     if (logoMap[c]) return logoMap[c];
   }
 
-  // 6. Prefix match: logoMap key starts with nameSlug + "-"
+  // Prefix match: any logo key that starts with nameSlug + "-"
   const prefix = nameSlug + '-';
   const hit = Object.keys(logoMap).find(k => k.startsWith(prefix));
   if (hit) return logoMap[hit];
@@ -217,8 +209,7 @@ function findLogo(logoMap, channelName, xmltvId) {
 async function fetchAndStoreChannels() {
   console.log('=== Starting channel fetch ===');
   if (!GITHUB_TOKEN) {
-    console.warn('No GITHUB_TOKEN — unauthenticated API allows only 60 req/hour.');
-    console.warn('Set GITHUB_TOKEN env var in Coolify for reliable full fetching (5000 req/hour).');
+    console.warn('No GITHUB_TOKEN — only 60 GitHub API req/hour. Set in Coolify env vars for 5000/hr.');
   }
 
   const [epgBranch, logoMap] = await Promise.all([
@@ -242,40 +233,33 @@ async function fetchAndStoreChannels() {
     throw new Error(`GitHub API error: ${err.message}`);
   }
 
-  if (treeResp.data.truncated) console.warn('GitHub tree response truncated — repo may be very large.');
+  if (treeResp.data.truncated) console.warn('GitHub tree response truncated.');
 
   const channelFiles = treeResp.data.tree.filter(f =>
     f.path.startsWith('sites/') && f.path.endsWith('.channels.xml') && f.type === 'blob'
   );
-
   console.log(`Found ${channelFiles.length} channel files`);
-  if (channelFiles.length === 0) throw new Error('No channel files found — repo structure may have changed.');
+  if (channelFiles.length === 0) throw new Error('No channel files found.');
 
   const remaining = treeResp.headers?.['x-ratelimit-remaining'];
   console.log(`Rate limit remaining: ${remaining}/${treeResp.headers?.['x-ratelimit-limit']}`);
-  if (remaining && parseInt(remaining) < channelFiles.length) {
-    console.warn(`Only ${remaining} requests left but need ~${channelFiles.length}. Some files may be skipped!`);
-  }
 
   db.exec('DELETE FROM channels');
-
-  const parser = new xml2js.Parser();
   const insert = db.prepare(
     `INSERT INTO channels (site, lang, xmltv_id, site_id, name, country, logo) VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
+  const parser = new xml2js.Parser();
 
   let total = 0, ok = 0, errors = 0;
   const batchSize = GITHUB_TOKEN ? 10 : 3;
 
   for (let i = 0; i < channelFiles.length; i += batchSize) {
     const batch = channelFiles.slice(i, i + batchSize);
-
     await Promise.all(batch.map(async (file) => {
       try {
         const url = `https://raw.githubusercontent.com/${EPG_REPO}/${epgBranch}/${file.path}`;
         const xml = await axios.get(url, { headers: { 'User-Agent': 'EPG-Browser/2.0' }, timeout: 15000 });
         const parsed = await parser.parseStringPromise(xml.data);
-
         if (parsed.channels?.channel) {
           const siteName = file.path.split('/')[1];
           db.transaction((channels) => {
@@ -303,7 +287,6 @@ async function fetchAndStoreChannels() {
     if (i % (batchSize * 10) === 0) {
       console.log(`Progress: ${Math.min(i + batchSize, channelFiles.length)}/${channelFiles.length} | ${total} channels | ${errors} errors`);
     }
-
     if (i + batchSize < channelFiles.length) {
       await new Promise(r => setTimeout(r, GITHUB_TOKEN ? 300 : 2000));
     }
@@ -314,7 +297,6 @@ async function fetchAndStoreChannels() {
   meta.run('files_processed', ok.toString());
   meta.run('files_errored', errors.toString());
   meta.run('last_error', '');
-
   console.log(`=== Done: ${total} channels from ${ok}/${channelFiles.length} files (${errors} errors) ===`);
   return total;
 }
@@ -337,13 +319,10 @@ app.get('/api/channels', (req, res) => {
     q += ' ORDER BY name LIMIT ? OFFSET ?';
     p.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
 
-    const channels = db.prepare(q).all(...p);
-    const lastUpdate = db.prepare('SELECT value FROM metadata WHERE key = ?').get('last_update');
-
     res.json({
-      channels,
+      channels: db.prepare(q).all(...p),
       pagination: { page: parseInt(page), limit: parseInt(limit), totalCount, totalPages: Math.ceil(totalCount / parseInt(limit)) },
-      lastUpdate: lastUpdate?.value || null,
+      lastUpdate: db.prepare('SELECT value FROM metadata WHERE key = ?').get('last_update')?.value || null,
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch channels', message: err.message });
@@ -364,7 +343,7 @@ app.get('/api/filters', (req, res) => {
 
 app.get('/api/stats', (req, res) => {
   try {
-    const g = (k) => db.prepare('SELECT value FROM metadata WHERE key = ?').get(k)?.value || null;
+    const g = k => db.prepare('SELECT value FROM metadata WHERE key = ?').get(k)?.value || null;
     res.json({
       totalChannels: db.prepare('SELECT COUNT(*) as count FROM channels').get().count,
       lastUpdate: g('last_update'),
@@ -383,7 +362,6 @@ app.post('/api/refresh', async (req, res) => {
     const count = await fetchAndStoreChannels();
     res.json({ success: true, channelCount: count, lastUpdate: new Date().toISOString() });
   } catch (err) {
-    console.error('Refresh failed:', err.message);
     db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run('last_error', err.message);
     res.status(500).json({ error: 'Failed to refresh', message: err.message });
   }
@@ -402,11 +380,9 @@ app.post('/api/report', (req, res) => {
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-// ── Start ────────────────────────────────────────────────────────────────────
-
 app.listen(PORT, async () => {
   console.log(`EPG Browser on port ${PORT}`);
-  console.log(GITHUB_TOKEN ? '✓ GitHub token present (5000 req/hr)' : '✗ No GITHUB_TOKEN (60 req/hr) — set in Coolify!');
+  console.log(GITHUB_TOKEN ? '✓ GitHub token present (5000 req/hr)' : '✗ No GITHUB_TOKEN — set in Coolify env vars for reliable fetching');
 
   const count = db.prepare('SELECT COUNT(*) as count FROM channels').get().count;
   if (count === 0) {
