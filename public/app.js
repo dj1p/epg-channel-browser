@@ -26,22 +26,9 @@ async function fetchStats() {
     el.channelCount.textContent = data.totalChannels.toLocaleString();
     el.totalCount.textContent = data.totalChannels.toLocaleString();
     if (data.lastUpdate) el.lastUpdate.textContent = new Date(data.lastUpdate).toLocaleString();
-
-    // Show token warning if not set
-    const warn = document.getElementById('tokenWarning');
-    if (warn && !data.hasGithubToken) warn.classList.remove('hidden');
-
-    // Show last error if any
-    if (data.lastError) {
-      const errEl = document.getElementById('lastError');
-      if (errEl) {
-        errEl.textContent = 'Last error: ' + data.lastError;
-        errEl.classList.remove('hidden');
-      }
-    }
     return data;
   } catch (e) {
-    console.error('fetchStats error:', e);
+    console.error('fetchStats:', e);
     return {};
   }
 }
@@ -62,7 +49,7 @@ async function fetchFilters() {
       el.langFilter.appendChild(o);
     });
   } catch (e) {
-    console.error('fetchFilters error:', e);
+    console.error('fetchFilters:', e);
   }
 }
 
@@ -91,7 +78,7 @@ async function fetchChannels() {
     el.loading.classList.add('hidden');
     el.content.classList.remove('hidden');
   } catch (e) {
-    console.error('fetchChannels error:', e);
+    console.error('fetchChannels:', e);
     el.loading.innerHTML = `
       <div class="text-white text-center">
         <p class="text-xl mb-2">Failed to load channels</p>
@@ -105,21 +92,31 @@ function xmlLine(ch) {
   return `<channel site="${ch.site}" lang="${ch.lang}" xmltv_id="${ch.xmltv_id}" site_id="${ch.site_id}">${ch.name}</channel>`;
 }
 
-// Logo resolution:
-// 1. Use the logo URL stored in DB (matched from dj1p/tvlogos manifest at import time)
-// 2. Fallback: try tvlogos.austheim.app with a name-based slug (your self-hosted mirror)
-// 3. Final fallback: SVG initials placeholder
+/**
+ * Get logo src for a channel.
+ * 1. Use the URL stored in DB — set at import time from logos-manifest.json
+ *    (these are tvlogos.austheim.app/countries/... URLs)
+ * 2. Fallback: derive a slug-based URL from channel name + country code
+ */
 function getLogoSrc(ch) {
   if (ch.logo && ch.logo.trim()) return ch.logo;
-  // Attempt to derive a slug the same way tvlogos names files
-  const cc = (ch.xmltv_id.match(/\.([a-z]{2,3})$/i) || [])[1] || '';
-  const slug = ch.name.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+  // Derive slug fallback: "Frikanalen" + xmltv "Frikanalen.no@SD" -> frikanalen-no
+  const ccMatch = (ch.xmltv_id || '').match(/\.([a-z]{2,3})(?:@|$)/i);
+  const cc = ccMatch ? ccMatch[1].toLowerCase() : '';
+  const slug = ch.name.toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
   const withCc = cc ? `${slug}-${cc}` : slug;
+
+  // We don't know the country subfolder, so try a few likely paths on tvlogos.austheim.app
+  // The server-side match is more reliable; this is just a browser-side last attempt
   return `https://tvlogos.austheim.app/logos/${withCc}.png`;
 }
 
 function makePlaceholder(name) {
-  const initials = name.substring(0, 2).toUpperCase();
+  const initials = (name || '??').substring(0, 2).toUpperCase();
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80">
     <rect width="80" height="80" rx="8" fill="#1e293b"/>
     <text x="40" y="50" font-family="system-ui,sans-serif" font-size="24" font-weight="bold"
@@ -133,14 +130,15 @@ function handleLogoError(img, name, xmltvId) {
   img.setAttribute('data-tried', tried + 1);
 
   if (tried === 0) {
-    // Try name-only slug at tvlogos.austheim.app
+    // Try name-only slug
     const slug = name.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     img.src = `https://tvlogos.austheim.app/logos/${slug}.png`;
-  } else if (tried === 1 && xmltvId) {
+  } else if (tried === 1) {
     // Try xmltv_id-derived slug
-    const slug = xmltvId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const slug = (xmltvId || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     img.src = `https://tvlogos.austheim.app/logos/${slug}.png`;
   } else {
+    // Final: SVG initials placeholder
     img.src = makePlaceholder(name);
     img.onerror = null;
   }
@@ -260,10 +258,9 @@ function renderPagination() {
   if (totalPages <= 1) { cont.classList.add('hidden'); return; }
   cont.classList.remove('hidden');
 
-  const max = 5;
   let s = Math.max(1, currentPage - 2);
-  let e = Math.min(totalPages, s + max - 1);
-  if (e - s < max - 1) s = Math.max(1, e - max + 1);
+  let e = Math.min(totalPages, s + 4);
+  if (e - s < 4) s = Math.max(1, e - 4);
 
   let html = '<div class="flex justify-center items-center gap-2 mt-6 flex-wrap">';
   html += `<button onclick="goToPage(${currentPage-1})" ${currentPage===1?'disabled':''} class="px-4 py-2 bg-white/10 text-white rounded-lg hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition">Previous</button>`;
@@ -328,7 +325,7 @@ el.resetBtn.addEventListener('click', resetFilters);
 el.refreshBtn.addEventListener('click', refreshData);
 
 (async function init() {
-  const stats = await fetchStats();
+  await fetchStats();
   await fetchFilters();
   await fetchChannels();
 })();
