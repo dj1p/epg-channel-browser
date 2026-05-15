@@ -12,7 +12,6 @@ const PORT = process.env.PORT || 3000;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 
 const EPG_REPO = 'dj1p/epg';
-// Logos are served from your deployed tvlogos site, NOT raw.githubusercontent.com
 const TVLOGOS_BASE = 'https://tvlogos.austheim.app';
 
 app.use(cors());
@@ -63,31 +62,57 @@ db.exec(`
 try { db.exec(`ALTER TABLE channels ADD COLUMN logo TEXT DEFAULT ''`); } catch (e) {}
 
 const countryMapping = {
-  '.us': 'United States', '.uk': 'United Kingdom', '.ca': 'Canada',
-  '.au': 'Australia', '.de': 'Germany', '.fr': 'France', '.es': 'Spain',
-  '.it': 'Italy', '.nl': 'Netherlands', '.br': 'Brazil', '.mx': 'Mexico',
-  '.ar': 'Argentina', '.in': 'India', '.jp': 'Japan', '.kr': 'South Korea',
-  '.cn': 'China', '.ru': 'Russia', '.se': 'Sweden', '.no': 'Norway',
-  '.dk': 'Denmark', '.fi': 'Finland', '.pl': 'Poland', '.tr': 'Turkey',
-  '.za': 'South Africa', '.nz': 'New Zealand', '.ie': 'Ireland',
-  '.pt': 'Portugal', '.gr': 'Greece', '.ch': 'Switzerland', '.at': 'Austria',
-  '.be': 'Belgium', '.cz': 'Czech Republic', '.ro': 'Romania', '.hu': 'Hungary',
-  '.il': 'Israel', '.ae': 'United Arab Emirates', '.sg': 'Singapore',
-  '.th': 'Thailand', '.my': 'Malaysia', '.id': 'Indonesia', '.ph': 'Philippines',
-  '.vn': 'Vietnam',
+  'us': 'United States', 'uk': 'United Kingdom', 'ca': 'Canada',
+  'au': 'Australia',     'de': 'Germany',         'fr': 'France',
+  'es': 'Spain',         'it': 'Italy',            'nl': 'Netherlands',
+  'br': 'Brazil',        'mx': 'Mexico',           'ar': 'Argentina',
+  'in': 'India',         'jp': 'Japan',            'kr': 'South Korea',
+  'cn': 'China',         'ru': 'Russia',           'se': 'Sweden',
+  'no': 'Norway',        'dk': 'Denmark',          'fi': 'Finland',
+  'pl': 'Poland',        'tr': 'Turkey',           'za': 'South Africa',
+  'nz': 'New Zealand',   'ie': 'Ireland',          'pt': 'Portugal',
+  'gr': 'Greece',        'ch': 'Switzerland',      'at': 'Austria',
+  'be': 'Belgium',       'cz': 'Czech Republic',   'ro': 'Romania',
+  'hu': 'Hungary',       'il': 'Israel',           'ae': 'United Arab Emirates',
+  'sg': 'Singapore',     'th': 'Thailand',         'my': 'Malaysia',
+  'id': 'Indonesia',     'ph': 'Philippines',      'vn': 'Vietnam',
 };
 
+/**
+ * Detect country code (2-letter) from xmltv_id and site domain.
+ * Returns { country: "Thailand", cc: "th" }
+ *
+ * FIX: The old code used substring matching on the site name, which caused
+ * false positives — e.g. "gigatv.3bbtv.co.th" matched "at" inside "gigatv".
+ * Now we split on dots and check exact domain PARTS, so ".th" only matches
+ * when "th" is an actual domain part like co.th or .th TLD.
+ */
 function detectCountry(xmltvId, siteName) {
-  for (const [s, c] of Object.entries(countryMapping)) {
-    if (xmltvId.toLowerCase().endsWith(s)) return c;
+  // 1. Try xmltv_id suffix: "CNN.us" -> "us", "Frikanalen.no@SD" -> "no"
+  const xmltvCc = (xmltvId.match(/\.([a-z]{2,3})(?:@|$)/i) || [])[1]?.toLowerCase();
+  if (xmltvCc && countryMapping[xmltvCc]) {
+    return { country: countryMapping[xmltvCc], cc: xmltvCc };
   }
-  for (const [s, c] of Object.entries(countryMapping)) {
-    if (xmltvId.toLowerCase().includes(s)) return c;
+
+  // 2. Try site domain parts: "gigatv.3bbtv.co.th" -> ["gigatv","3bbtv","co","th"]
+  //    Check each part as an exact match against country codes.
+  //    Prioritise TLD (last part), then second-to-last, etc.
+  const domainParts = siteName.toLowerCase().replace(/\/.*$/, '').split('.');
+  for (let i = domainParts.length - 1; i >= 0; i--) {
+    const part = domainParts[i];
+    if (part.length === 2 && countryMapping[part]) {
+      return { country: countryMapping[part], cc: part };
+    }
   }
-  for (const [s, c] of Object.entries(countryMapping)) {
-    if (siteName.includes(s.substring(1))) return c;
+
+  // 3. Try xmltv_id substring as last resort (for IDs like "SomeChannel.co.uk")
+  for (const [cc, country] of Object.entries(countryMapping)) {
+    if (xmltvId.toLowerCase().includes('.' + cc)) {
+      return { country, cc };
+    }
   }
-  return 'International';
+
+  return { country: 'International', cc: null };
 }
 
 function githubHeaders() {
@@ -114,21 +139,15 @@ async function detectBranch(repo) {
 /**
  * Fetch logos-manifest.json from tvlogos.austheim.app.
  *
- * The manifest structure (from generate_manifest.py) is:
+ * Manifest structure (from generate_manifest.py):
  * {
- *   "generated": "auto",
- *   "total": 51706,
  *   "logos": [
  *     { "name": "frikanalen-no.png", "path": "/countries/nordic/norway/frikanalen-no.png", "country": "nordic/norway" },
- *     ...
+ *     { "name": "cnn-us.png",        "path": "/countries/united-states/cnn-us.png",        "country": "united-states" }
  *   ]
  * }
  *
- * Logo URL = TVLOGOS_BASE + entry.path
- * e.g. https://tvlogos.austheim.app/countries/nordic/norway/frikanalen-no.png
- *
- * We build a map: filename-stem (lowercase, no .png) -> full URL
- * e.g. "frikanalen-no" -> "https://tvlogos.austheim.app/countries/nordic/norway/frikanalen-no.png"
+ * We build: logoMap["frikanalen-no"] = "https://tvlogos.austheim.app/countries/nordic/norway/frikanalen-no.png"
  */
 async function fetchLogoManifest() {
   console.log('Fetching logos-manifest.json from tvlogos.austheim.app...');
@@ -138,17 +157,12 @@ async function fetchLogoManifest() {
       headers: { 'User-Agent': 'EPG-Browser/2.0' }
     });
 
-    const manifest = resp.data;
-    // The logos array is under manifest.logos
-    const entries = manifest.logos || (Array.isArray(manifest) ? manifest : []);
-
+    const entries = resp.data.logos || [];
     const logoMap = {};
-    for (const entry of entries) {
-      if (!entry || !entry.name || !entry.path) continue;
-      if (!entry.name.toLowerCase().endsWith('.png')) continue;
 
+    for (const entry of entries) {
+      if (!entry?.name?.toLowerCase().endsWith('.png') || !entry.path) continue;
       const stem = entry.name.replace(/\.png$/i, '').toLowerCase();
-      // path already starts with /countries/... so just prepend base
       logoMap[stem] = `${TVLOGOS_BASE}${entry.path}`;
     }
 
@@ -161,10 +175,15 @@ async function fetchLogoManifest() {
 }
 
 /**
- * Find a logo for a channel using the tvlogos naming convention.
- * Files are named: {channel-name}-{country-code}.png  e.g. frikanalen-no.png, cnn-us.png
+ * Find a logo for a channel.
+ *
+ * tvlogos naming convention: {channel-slug}-{cc}.png
+ * e.g. frikanalen-no.png, cnn-us.png, cartoonito-th.png
+ *
+ * We now pass in `cc` (derived from detectCountry) so channels with empty
+ * xmltv_id still get the right country code from their site domain.
  */
-function findLogo(logoMap, channelName, xmltvId) {
+function findLogo(logoMap, channelName, xmltvId, cc) {
   if (!logoMap || Object.keys(logoMap).length === 0) return '';
 
   function toSlug(str) {
@@ -175,33 +194,38 @@ function findLogo(logoMap, channelName, xmltvId) {
       .replace(/^-+|-+$/g, '');
   }
 
-  // Extract country code from end of xmltv_id: "CNN.us" -> "us", "Frikanalen.no@SD" -> "no"
-  const ccMatch = xmltvId.match(/\.([a-z]{2,3})(?:@|$)/i);
-  const cc = ccMatch ? ccMatch[1].toLowerCase() : null;
+  // cc from xmltv_id takes priority over site-derived cc
+  const xmltvCc = (xmltvId.match(/\.([a-z]{2,3})(?:@|$)/i) || [])[1]?.toLowerCase();
+  const effectiveCc = xmltvCc || cc;
 
-  const xmltvBase = xmltvId.replace(/\.[a-z]{2,3}(@.*)?$/i, ''); // strip ".no@SD" etc.
+  const xmltvBase = xmltvId.replace(/\.[a-z]{2,3}(@.*)?$/i, '');
   const nameSlug = toSlug(channelName);
   const xmltvSlug = toSlug(xmltvBase);
 
   const candidates = [];
-  if (cc) {
-    candidates.push(`${nameSlug}-${cc}`);           // frikanalen-no  ✓
-    if (xmltvSlug !== nameSlug) {
-      candidates.push(`${xmltvSlug}-${cc}`);        // from xmltv id
+  if (effectiveCc) {
+    candidates.push(`${nameSlug}-${effectiveCc}`);           // cartoonito-th  ✓
+    if (xmltvSlug && xmltvSlug !== nameSlug) {
+      candidates.push(`${xmltvSlug}-${effectiveCc}`);
     }
   }
-  candidates.push(toSlug(xmltvId));                 // full xmltv_id as slug
-  candidates.push(nameSlug);                        // name only
-  if (xmltvSlug !== nameSlug) candidates.push(xmltvSlug);
+  if (xmltvId) candidates.push(toSlug(xmltvId));             // full xmltv_id slug
+  candidates.push(nameSlug);                                 // name only (last resort)
+  if (xmltvSlug && xmltvSlug !== nameSlug) candidates.push(xmltvSlug);
 
   for (const c of candidates) {
-    if (logoMap[c]) return logoMap[c];
+    if (c && logoMap[c]) return logoMap[c];
   }
 
-  // Prefix match: any logo key that starts with nameSlug + "-"
-  const prefix = nameSlug + '-';
-  const hit = Object.keys(logoMap).find(k => k.startsWith(prefix));
-  if (hit) return logoMap[hit];
+  // Prefix match only when we have a cc — avoids wrong-country matches
+  if (effectiveCc) {
+    const prefixWithCc = `${nameSlug}-${effectiveCc}`;
+    // Already tried exact match above; try prefix of the stem
+    const hit = Object.keys(logoMap).find(k =>
+      k.startsWith(nameSlug + '-') && k.endsWith('-' + effectiveCc)
+    );
+    if (hit) return logoMap[hit];
+  }
 
   return '';
 }
@@ -261,13 +285,13 @@ async function fetchAndStoreChannels() {
         const xml = await axios.get(url, { headers: { 'User-Agent': 'EPG-Browser/2.0' }, timeout: 15000 });
         const parsed = await parser.parseStringPromise(xml.data);
         if (parsed.channels?.channel) {
-          const siteName = file.path.split('/')[1];
+          const siteName = file.path.split('/')[1];  // e.g. "gigatv.3bbtv.co.th"
           db.transaction((channels) => {
             for (const ch of channels) {
               const xmltvId = ch.$.xmltv_id || '';
               const name = ch._ || ch.$.xmltv_id || 'Unknown';
-              const country = detectCountry(xmltvId, siteName);
-              const logo = findLogo(logoMap, name, xmltvId);
+              const { country, cc } = detectCountry(xmltvId, siteName);
+              const logo = findLogo(logoMap, name, xmltvId, cc);
               insert.run(ch.$.site || siteName, ch.$.lang || 'en', xmltvId, ch.$.site_id || '', name, country, logo);
               total++;
             }
@@ -382,7 +406,7 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.ht
 
 app.listen(PORT, async () => {
   console.log(`EPG Browser on port ${PORT}`);
-  console.log(GITHUB_TOKEN ? '✓ GitHub token present (5000 req/hr)' : '✗ No GITHUB_TOKEN — set in Coolify env vars for reliable fetching');
+  console.log(GITHUB_TOKEN ? '✓ GitHub token present (5000 req/hr)' : '✗ No GITHUB_TOKEN — set in Coolify env vars');
 
   const count = db.prepare('SELECT COUNT(*) as count FROM channels').get().count;
   if (count === 0) {
