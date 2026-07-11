@@ -135,6 +135,17 @@ async function detectBranch(repo) {
   }
 }
 
+// Shared normalizer -- MUST be used identically on both the manifest keys and
+// the query candidates, or matching silently fails. (This used to be defined
+// twice: once implicitly -- fetchLogoManifest() only lowercased filenames and
+// kept dots/spaces/underscores -- and once explicitly inside findLogo(),
+// which strips ALL punctuation to hyphens. Two different slug spaces being
+// compared against each other meant almost nothing matched, e.g.
+// "CNN.us.png" -> stored as "cnn.us" but looked up as "cnn-us".)
+function toSlug(str) {
+  return String(str).toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
 async function fetchLogoManifest() {
   console.log('Fetching logos-manifest.json from tvlogos.austheim.app...');
   try {
@@ -146,8 +157,12 @@ async function fetchLogoManifest() {
     const logoMap = {};
     for (const entry of entries) {
       if (!entry?.name?.toLowerCase().endsWith('.png') || !entry.path) continue;
-      const stem = entry.name.replace(/\.png$/i, '').toLowerCase();
-      logoMap[stem] = `${TVLOGOS_BASE}${entry.path}`;
+      const rawStem = entry.name.replace(/\.png$/i, '');
+      const stem = toSlug(rawStem);
+      if (!stem) continue;
+      // First filename to claim a slug wins -- don't let a later collision
+      // silently overwrite an earlier good match.
+      if (!logoMap[stem]) logoMap[stem] = `${TVLOGOS_BASE}${entry.path}`;
     }
     console.log(`Logo manifest loaded: ${Object.keys(logoMap).length} logos`);
     return logoMap;
@@ -159,10 +174,6 @@ async function fetchLogoManifest() {
 
 function findLogo(logoMap, channelName, xmltvId, cc) {
   if (!logoMap || Object.keys(logoMap).length === 0) return '';
-
-  function toSlug(str) {
-    return str.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  }
 
   const xmltvCc = (xmltvId.match(/\.([a-z]{2,3})(?:@|$)/i) || [])[1]?.toLowerCase();
   const effectiveCc = xmltvCc || cc;
