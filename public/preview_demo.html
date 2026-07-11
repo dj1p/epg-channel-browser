@@ -385,6 +385,85 @@
   </div>
 </div>
 
-<script src="app.js"></script>
+<script>const MOCK = [
+  {id:1, site:"tvtv.us", lang:"en", xmltv_id:"CNN.us", site_id:"10142", name:"CNN", country:"United States", logo:""},
+  {id:2, site:"3bbtv.co.th", lang:"th", xmltv_id:"Ch7HD.th", site_id:"7", name:"ช่อง 7HD", country:"Thailand", logo:""},
+  {id:3, site:"cctv.com", lang:"zh", xmltv_id:"CCTV1.cn", site_id:"1", name:"中央电视台综合", country:"China", logo:""},
+  {id:4, site:"arirang.com", lang:"en", xmltv_id:"ArirangTV.kr", site_id:"CH_K", name:"Arirang TV", country:"South Korea", logo:""},
+  {id:5, site:"bbc.co.uk", lang:"en", xmltv_id:"BBCOne.uk", site_id:"bbc1", name:"BBC One", country:"United Kingdom", logo:"https://upload.wikimedia.org/wikipedia/commons/4/41/BBC_One_logo_2021.svg"},
+  {id:6, site:"ndr.de", lang:"de", xmltv_id:"NDR.de", site_id:"ndr", name:"NDR Fernsehen", country:"Germany", logo:""},
+];
+document.getElementById('channelCount').textContent = "6";
+document.getElementById('totalCount').textContent = "6";
+document.getElementById('resultCount').textContent = "6";
+document.getElementById('lastUpdate').textContent = new Date().toLocaleString();
+
+function escXml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function makePlaceholder(name) {
+  const initials = (name || '??').trim().substring(0, 2).toUpperCase();
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80">
+    <rect width="80" height="80" rx="10" fill="#141a22"/>
+    <rect width="80" height="80" rx="10" fill="none" stroke="#25303c" stroke-width="1"/>
+    <text x="40" y="49" font-family="'JetBrains Mono',monospace" font-size="22" font-weight="600"
+          text-anchor="middle" fill="#f5a623">${escXml(initials)}</text>
+  </svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+function getLogoSrc(ch){ return (ch.logo && ch.logo.trim()) ? ch.logo : makePlaceholder(ch.name); }
+function handleLogoError(img, name){ img.onerror = null; img.src = makePlaceholder(name); }
+function escHtml(t){ if (t==null) return ''; const d=document.createElement('div'); d.textContent=String(t); return d.innerHTML; }
+function xmlLine(ch){ return `<channel site="${ch.site}" lang="${ch.lang}" xmltv_id="${ch.xmltv_id}" site_id="${ch.site_id}">${ch.name}</channel>`; }
+
+function renderChannels(channels) {
+  document.getElementById('channelList').innerHTML = channels.map(ch => {
+    const logo = getLogoSrc(ch);
+    const line = xmlLine(ch);
+    return `
+    <div class="card p-5">
+      <div class="flex flex-col md:flex-row gap-4">
+        <div class="flex-shrink-0">
+          <img src="${escHtml(logo)}" alt="${escHtml(ch.name)} logo"
+               class="w-16 h-16 object-contain bg-[var(--bg-1)] border border-[var(--line-soft)] rounded-lg p-2"
+               onerror="handleLogoError(this, ${JSON.stringify(ch.name)})" loading="lazy">
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2">
+            <h3 class="font-display text-lg font-medium text-[var(--text-hi)] truncate">${escHtml(ch.name)}</h3>
+            <span class="font-mono-tag text-xs text-[var(--text-lo)] truncate">${escHtml(ch.xmltv_id)}</span>
+          </div>
+          <div class="flex flex-wrap gap-2 mb-3">
+            <span class="badge badge-country">${escHtml(ch.country)}</span>
+            <span class="badge badge-site">${escHtml(ch.site)}</span>
+            <span class="badge badge-lang">${escHtml(ch.lang).toUpperCase()}</span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button data-variant="btn-amber" class="btn btn-amber"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>Copy source</button>
+            <button data-variant="btn-cyan" class="btn btn-cyan"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"></path></svg>XMLTV ID</button>
+            <button data-variant="btn-violet" class="btn btn-violet"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>Site ID</button>
+            <button class="btn btn-danger-outline"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>Report</button>
+          </div>
+        </div>
+      </div>
+      <div class="mt-4 p-3 bg-[var(--bg-1)] border border-[var(--line-soft)] rounded-lg overflow-x-auto">
+        <code class="xml-line text-xs text-[var(--cyan)]">${escHtml(line)}</code>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// Wire up combo boxes with mock data for the demo
+function createCombobox(container, { placeholder }) {
+  const btn = document.createElement('button');
+  btn.type='button'; btn.className='combo-btn';
+  btn.innerHTML = `<span class="placeholder">${placeholder}</span><svg class="w-4 h-4 text-[var(--text-lo)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>`;
+  container.appendChild(btn);
+}
+createCombobox(document.getElementById('siteCombo'), {placeholder:'All sites'});
+createCombobox(document.getElementById('langCombo'), {placeholder:'All languages'});
+
+renderChannels(MOCK);
+document.getElementById('loading').classList.add('hidden');
+document.getElementById('content').classList.remove('hidden');
+</script>
 </body>
 </html>
