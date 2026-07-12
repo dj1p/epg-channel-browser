@@ -268,11 +268,18 @@ async function fetchChannels() {
 // Logos
 //
 // The server (server.js -> findLogo()) already runs a thorough multi-candidate
-// match against the logo manifest before a channel is stored, so `ch.logo` is
-// the best answer we're going to get. If it's empty, there is no point
-// re-guessing the same URL pattern on the client — it already failed
-// server-side and will 404 here too, for no benefit. So: trust the server,
-// and fall straight to a placeholder when it found nothing.
+// match against the logo manifest before a channel is stored, so `ch.logo`/
+// `ch.logo_thumb` are the best answer we're going to get. If both are empty,
+// there is no point re-guessing the same URL pattern on the client — it
+// already failed server-side and will 404 here too, for no benefit. So:
+// trust the server, and fall straight to a placeholder when it found nothing.
+//
+// `logo_thumb` (a small WebP, ~120px) is preferred for display -- tvlogos'
+// source images are ~512px, and this list can show dozens of channels at
+// once, so pulling full-size images here would be the same unnecessary cost
+// tvlogos itself had before its thumbnail pipeline. If the thumbnail 404s
+// (e.g. tvlogos hasn't regenerated thumbnails since a logo was added), fall
+// back to the full-size image before giving up and showing a placeholder.
 //
 // The placeholder itself used to be built with btoa(), which throws on any
 // non-Latin1 character. Since this catalog spans channels from 150+
@@ -297,14 +304,22 @@ function escXml(s) {
 }
 
 function getLogoSrc(ch) {
+  if (ch.logo_thumb && ch.logo_thumb.trim()) return ch.logo_thumb;
   if (ch.logo && ch.logo.trim()) return ch.logo;
   return makePlaceholder(ch.name);
 }
 
-// Single-shot fallback: if a real logo URL (from the server) turns out to be
-// dead (rotted link, moved file, etc.), drop straight to the placeholder.
-// No further guessing — avoids repeat 404s against tvlogos.austheim.app.
-function handleLogoError(img, name) {
+// Two-stage fallback: thumbnail fails -> try the full-size image (still a
+// real, server-verified match, just maybe missing its thumbnail) -> only
+// then give up and show the placeholder. Mirrors the same pattern used on
+// tvlogos itself.
+function handleLogoError(img, name, fullLogoUrl) {
+  const triedFull = img.dataset.triedFull;
+  if (!triedFull && fullLogoUrl && img.src !== fullLogoUrl) {
+    img.dataset.triedFull = 'true';
+    img.src = fullLogoUrl;
+    return;
+  }
   img.onerror = null;
   img.src = makePlaceholder(name);
 }
@@ -368,7 +383,7 @@ function renderChannels(channels) {
         <div class="flex-shrink-0">
           <img src="${escHtml(logo)}" alt="${escHtml(ch.name)} logo"
                class="w-16 h-16 object-contain bg-[var(--bg-1)] border border-[var(--line-soft)] rounded-lg p-2"
-               onerror="handleLogoError(this, ${JSON.stringify(ch.name)})"
+               onerror="handleLogoError(this, ${JSON.stringify(ch.name)}, ${JSON.stringify(ch.logo || '')})"
                loading="lazy">
         </div>
         <div class="flex-1 min-w-0">
