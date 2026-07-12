@@ -35,6 +35,7 @@ db.exec(`
     name TEXT NOT NULL,
     country TEXT NOT NULL,
     logo TEXT DEFAULT '',
+    logo_thumb TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS idx_site ON channels(site);
@@ -60,6 +61,7 @@ db.exec(`
   );
 `);
 try { db.exec(`ALTER TABLE channels ADD COLUMN logo TEXT DEFAULT ''`); } catch (e) {}
+try { db.exec(`ALTER TABLE channels ADD COLUMN logo_thumb TEXT DEFAULT ''`); } catch (e) {}
 
 // Track background refresh state so the UI can poll it
 let refreshState = {
@@ -206,6 +208,21 @@ async function fetchLogoManifest() {
   }
 }
 
+// tvlogos serves small WebP thumbnails at /thumbs/... that exactly mirror
+// the /countries/... structure findLogo() matches against (see
+// generate-thumbnails.js / generate-manifest.js in that repo). So instead of
+// building and maintaining a second parallel index just for thumbnails, we
+// derive the thumb URL directly from whatever full-size URL was matched --
+// same directory, .webp extension. If the thumbnail doesn't actually exist
+// yet (e.g. tvlogos hasn't run its thumbnail generator since a logo was
+// added), the front end falls back to the full-size image automatically.
+function deriveThumbUrl(logoUrl) {
+  if (!logoUrl) return '';
+  return logoUrl
+    .replace('/countries/', '/thumbs/')
+    .replace(/\.(png|jpe?g|webp|svg|gif)$/i, '.webp');
+}
+
 function findLogo(logoMap, logosByCountry, channelName, xmltvId, cc, country) {
   if (!logoMap || Object.keys(logoMap).length === 0) return '';
 
@@ -319,7 +336,7 @@ async function fetchAndStoreChannels() {
 
   db.exec('DELETE FROM channels');
   const insert = db.prepare(
-    `INSERT INTO channels (site, lang, xmltv_id, site_id, name, country, logo) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO channels (site, lang, xmltv_id, site_id, name, country, logo, logo_thumb) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const parser = new xml2js.Parser();
 
@@ -363,7 +380,8 @@ async function fetchAndStoreChannels() {
 
             const { country, cc } = detectCountry(xmltvId, siteName);
             const logo = findLogo(logoMap, logosByCountry, name, xmltvId, cc, country);
-            insert.run(site, lang, xmltvId, siteId, name, country, logo);
+            const logoThumb = deriveThumbUrl(logo);
+            insert.run(site, lang, xmltvId, siteId, name, country, logo, logoThumb);
             total++;
           }
         })(parsed.channels.channel);
