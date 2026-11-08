@@ -5,6 +5,9 @@ const xml2js = require('xml2js');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 const Database = require('better-sqlite3');
 
 const app = express();
@@ -114,27 +117,6 @@ function detectCountry(xmltvId, siteName) {
   }
 
   return { country: 'International', cc: null };
-}
-
-function githubHeaders() {
-  const h = { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'EPG-Browser/2.0' };
-  if (GITHUB_TOKEN) h['Authorization'] = `token ${GITHUB_TOKEN}`;
-  return h;
-}
-
-async function detectBranch(repo) {
-  try {
-    const r = await axios.get(`https://api.github.com/repos/${repo}`, { headers: githubHeaders(), timeout: 10000 });
-    return r.data.default_branch || 'main';
-  } catch (e) {
-    for (const b of ['main', 'master']) {
-      try {
-        await axios.get(`https://api.github.com/repos/${repo}/git/refs/heads/${b}`, { headers: githubHeaders(), timeout: 8000 });
-        return b;
-      } catch (_) {}
-    }
-    return 'main';
-  }
 }
 
 // Shared normalizer -- MUST be used identically on both the manifest keys and
@@ -293,128 +275,170 @@ function findLogo(logoMap, logosByCountry, channelName, xmltvId, cc, country) {
   return '';
 }
 
+// ── Getting the channel lists from GitHub ──────────────────────────────────
+//
+// We used to crawl the GitHub API + download ~650 files one by one from
+// raw.githubusercontent.com. That hit the 60 requests/hour API limit, and the
+// table was wiped *before* the crawl, so any failure left the site empty.
+//
+// Now: one shallow, sparse git clone of just sites/*/*.channels.xml (git
+// transport is not subject to the API rate limit; ~5 s the first time, a tiny
+// fetch afterwards), parse everything in memory, then replace the table in a
+// single transaction. If anything fails, the previous data stays untouched.
+
+const REPO_DIR = path.join(dataDir, 'epg-repo');
+const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+function scrub(msg) {
+  return GITHUB_TOKEN ? String(msg).split(GITHUB_TOKEN).join('***') : String(msg);
+}
+
+async function git(args, cwd) {
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      cwd,
+      timeout: 5 * 60 * 1000,
+      maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    return stdout.trim();
+  } catch (err) {
+    if (err.code === 'ENOENT') throw new Error('git is not installed in this container (add "git" to the Dockerfile).');
+    throw new Error(`git ${args[0]} failed: ${scrub((err.stderr || err.message || '').toString().trim().split('\n').pop())}`);
+  }
+}
+
+function repoUrl() {
+  return GITHUB_TOKEN
+    ? `https://x-access-token:${GITHUB_TOKEN}@github.com/${EPG_REPO}.git`
+    : `https://github.com/${EPG_REPO}.git`;
+}
+
+async function syncRepo() {
+  if (!fs.existsSync(path.join(REPO_DIR, '.git'))) {
+    fs.rmSync(REPO_DIR, { recursive: true, force: true });
+    await git(['clone', '--depth', '1', '--filter=blob:none', '--no-checkout', repoUrl(), REPO_DIR]);
+    await git(['sparse-checkout', 'set', '--no-cone', '/sites/*/*.channels.xml'], REPO_DIR);
+    await git(['checkout'], REPO_DIR);
+  } else {
+    await git(['remote', 'set-url', 'origin', repoUrl()], REPO_DIR);
+    await git(['fetch', '--depth', '1', 'origin'], REPO_DIR);
+    await git(['reset', '--hard', 'FETCH_HEAD'], REPO_DIR);
+  }
+  return git(['rev-parse', '--short', 'HEAD'], REPO_DIR);
+}
+
+function listChannelFiles() {
+  const sitesDir = path.join(REPO_DIR, 'sites');
+  const out = [];
+  if (!fs.existsSync(sitesDir)) return out;
+  for (const d of fs.readdirSync(sitesDir, { withFileTypes: true })) {
+    if (!d.isDirectory()) continue;
+    for (const f of fs.readdirSync(path.join(sitesDir, d.name))) {
+      if (f.endsWith('.channels.xml')) out.push({ siteName: d.name, rel: `sites/${d.name}/${f}`, full: path.join(sitesDir, d.name, f) });
+    }
+  }
+  return out;
+}
+
 async function fetchAndStoreChannels() {
   console.log('=== Starting channel fetch ===');
-  if (!GITHUB_TOKEN) {
-    console.warn('No GITHUB_TOKEN — only 60 GitHub API req/hour. Set in Coolify env vars for 5000/hr.');
-  }
-
   const setMeta = db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
 
-  const [epgBranch, logoData] = await Promise.all([
-    detectBranch(EPG_REPO),
-    fetchLogoManifest(),
-  ]);
+  setMeta.run('refresh_progress', 'Syncing repo from GitHub...');
+  const [commit, logoData] = await Promise.all([syncRepo(), fetchLogoManifest()]);
   const { logoMap, logosByCountry } = logoData;
-  console.log(`EPG branch: ${epgBranch}`);
+  console.log(`Repo ${EPG_REPO} at ${commit}`);
 
-  let treeResp;
-  try {
-    treeResp = await axios.get(
-      `https://api.github.com/repos/${EPG_REPO}/git/trees/${epgBranch}?recursive=1`,
-      { headers: githubHeaders(), timeout: 30000 }
-    );
-  } catch (err) {
-    const status = err.response?.status;
-    const reset = err.response?.headers?.['x-ratelimit-reset'];
-    const resetTime = reset ? new Date(reset * 1000).toISOString() : 'unknown';
-    if (status === 403 || status === 429) throw new Error(`GitHub rate limited — resets at ${resetTime}. Set GITHUB_TOKEN env var.`);
-    if (status === 404) throw new Error(`Branch '${epgBranch}' not found in ${EPG_REPO}.`);
-    throw new Error(`GitHub API error: ${err.message}`);
-  }
-
-  if (treeResp.data.truncated) console.warn('GitHub tree response truncated.');
-
-  const channelFiles = treeResp.data.tree.filter(f =>
-    f.path.startsWith('sites/') && f.path.endsWith('.channels.xml') && f.type === 'blob'
-  );
+  const channelFiles = listChannelFiles();
   console.log(`Found ${channelFiles.length} channel files`);
-  if (channelFiles.length === 0) throw new Error('No channel files found.');
+  if (channelFiles.length === 0) throw new Error('No channel files found in the repo checkout.');
 
-  const remaining = treeResp.headers?.['x-ratelimit-remaining'];
-  console.log(`Rate limit remaining: ${remaining}/${treeResp.headers?.['x-ratelimit-limit']}`);
-
-  db.exec('DELETE FROM channels');
-  const insert = db.prepare(
-    `INSERT INTO channels (site, lang, xmltv_id, site_id, name, country, logo, logo_thumb) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  );
   const parser = new xml2js.Parser();
 
-  // Some sites have more than one *.channels.xml file (e.g. gigatv.3bbtv.co.th
-  // has "gigatv.3bbtv.co.th.channels.xml", "..._th.channels.xml", and
-  // "...config_th.channels.xml" all sitting in the same directory -- stale or
-  // renamed snapshots left behind in the community repo). All of them match
-  // the ".channels.xml" filter and get processed, so the same channel can
-  // show up 2-3x. This is different from sites like dstv.com or pluto.tv,
-  // which *legitimately* have many files -- one genuinely distinct channel
-  // lineup per country/region. So we can't just skip files by name; instead
-  // we dedup on exact content: if the same (site, site_id, xmltv_id, lang,
-  // name) tuple has already been inserted this run, skip it, regardless of
-  // which file it came from.
+  // Some sites ship more than one *.channels.xml (e.g. gigatv.3bbtv.co.th has
+  // three snapshots in one directory), so the same channel can appear 2-3x.
+  // Dedup on exact content rather than skipping files by name, because sites
+  // like pluto.tv or dstv.com legitimately have many distinct per-country files.
   const seenChannels = new Set();
+  const rows = [];
+  let ok = 0, errors = 0, duplicates = 0;
 
-  let total = 0, ok = 0, errors = 0, duplicates = 0;
-
-  // Process files sequentially — avoids memory spikes from parallel XML parsing
-  // that caused the container to be killed mid-run. With a token this still
-  // completes in ~10-15 min for 500+ files.
   for (let i = 0; i < channelFiles.length; i++) {
     const file = channelFiles[i];
     try {
-      const url = `https://raw.githubusercontent.com/${EPG_REPO}/${epgBranch}/${file.path}`;
-      const xml = await axios.get(url, { headers: { 'User-Agent': 'EPG-Browser/2.0' }, timeout: 15000 });
-      const parsed = await parser.parseStringPromise(xml.data);
+      const parsed = await parser.parseStringPromise(fs.readFileSync(file.full, 'utf8'));
       if (parsed.channels?.channel) {
-        const siteName = file.path.split('/')[1];
-        db.transaction((channels) => {
-          for (const ch of channels) {
-            const xmltvId = ch.$.xmltv_id || '';
-            const name = ch._ || ch.$.xmltv_id || 'Unknown';
-            const site = ch.$.site || siteName;
-            const lang = ch.$.lang || 'en';
-            const siteId = ch.$.site_id || '';
+        for (const ch of parsed.channels.channel) {
+          const xmltvId = ch.$.xmltv_id || '';
+          const name = ch._ || ch.$.xmltv_id || 'Unknown';
+          const site = ch.$.site || file.siteName;
+          const lang = ch.$.lang || 'en';
+          const siteId = ch.$.site_id || '';
 
-            const dedupKey = `${site}\u0000${siteId}\u0000${xmltvId}\u0000${lang}\u0000${name}`;
-            if (seenChannels.has(dedupKey)) { duplicates++; continue; }
-            seenChannels.add(dedupKey);
+          const dedupKey = `${site}\u0000${siteId}\u0000${xmltvId}\u0000${lang}\u0000${name}`;
+          if (seenChannels.has(dedupKey)) { duplicates++; continue; }
+          seenChannels.add(dedupKey);
 
-            const { country, cc } = detectCountry(xmltvId, siteName);
-            const logo = findLogo(logoMap, logosByCountry, name, xmltvId, cc, country);
-            const logoThumb = deriveThumbUrl(logo);
-            insert.run(site, lang, xmltvId, siteId, name, country, logo, logoThumb);
-            total++;
-          }
-        })(parsed.channels.channel);
+          const { country, cc } = detectCountry(xmltvId, file.siteName);
+          const logo = findLogo(logoMap, logosByCountry, name, xmltvId, cc, country);
+          rows.push([site, lang, xmltvId, siteId, name, country, logo, deriveThumbUrl(logo)]);
+        }
         ok++;
       }
     } catch (err) {
       errors++;
-      if ([403, 429].includes(err.response?.status)) {
-        console.error(`Rate limited on ${file.path}`);
-      } else {
-        console.error(`Error on ${file.path}: ${err.message}`);
-      }
+      console.error(`Error on ${file.rel}: ${err.message}`);
     }
-
-    // Update progress every 10 files
-    if (i % 10 === 0) {
-      const pct = Math.round((i / channelFiles.length) * 100);
-      setMeta.run('refresh_progress', `${pct}% — ${i}/${channelFiles.length} files, ${total} channels`);
-      setMeta.run('files_processed', ok.toString());
-      setMeta.run('files_errored', errors.toString());
-      if (i % 50 === 0) {
-        console.log(`Progress: ${i}/${channelFiles.length} files | ${total} channels | ${errors} errors`);
-      }
-    }
+    if (i % 25 === 0) setMeta.run('refresh_progress', `Parsing ${i}/${channelFiles.length} files, ${rows.length} channels`);
   }
 
+  if (rows.length === 0) throw new Error('Parsed 0 channels -- keeping the existing data.');
+
+  // Replace the table contents atomically: readers see either the old data or the new.
+  const insert = db.prepare(
+    `INSERT INTO channels (site, lang, xmltv_id, site_id, name, country, logo, logo_thumb) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  db.transaction(() => {
+    db.exec('DELETE FROM channels');
+    for (const r of rows) insert.run(...r);
+  })();
+
   setMeta.run('last_update', new Date().toISOString());
+  setMeta.run('repo_commit', commit);
   setMeta.run('files_processed', ok.toString());
   setMeta.run('files_errored', errors.toString());
   setMeta.run('last_error', '');
   setMeta.run('refresh_progress', 'complete');
-  console.log(`=== Done: ${total} channels from ${ok}/${channelFiles.length} files (${errors} errors, ${duplicates} exact duplicates skipped) ===`);
-  return total;
+  console.log(`=== Done: ${rows.length} channels from ${ok}/${channelFiles.length} files (${errors} errors, ${duplicates} exact duplicates skipped) ===`);
+  return rows.length;
+}
+
+// Single entry point for every refresh (manual button, startup, daily timer).
+function startRefresh() {
+  if (refreshState.running) return false;
+  refreshState.running = true;
+  refreshState.startedAt = new Date().toISOString();
+  refreshState.finishedAt = null;
+  refreshState.error = null;
+  refreshState.channelCount = null;
+  fetchAndStoreChannels()
+    .then(count => {
+      refreshState.running = false;
+      refreshState.finishedAt = new Date().toISOString();
+      refreshState.channelCount = count;
+      console.log(`Refresh complete: ${count} channels`);
+    })
+    .catch(err => {
+      const msg = scrub(err.message);
+      refreshState.running = false;
+      refreshState.finishedAt = new Date().toISOString();
+      refreshState.error = msg;
+      console.error('Refresh failed:', msg);
+      db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run('last_error', msg);
+      db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run('refresh_progress', 'failed');
+    });
+  return true;
 }
 
 // ── Routes ──────────────────────────────────────────────────────────────────
@@ -466,6 +490,7 @@ app.get('/api/stats', (req, res) => {
       filesProcessed: parseInt(g('files_processed') || 0),
       filesErrored: parseInt(g('files_errored') || 0),
       lastError: g('last_error') || '',
+      repoCommit: g('repo_commit'),
       hasGithubToken: !!GITHUB_TOKEN,
       refreshRunning: refreshState.running,
       refreshProgress: g('refresh_progress') || '',
@@ -475,44 +500,15 @@ app.get('/api/stats', (req, res) => {
   }
 });
 
-// Refresh runs in the BACKGROUND — responds immediately so the proxy doesn't time out.
+// Refresh runs in the BACKGROUND -- responds immediately so the proxy doesn't time out.
 // The UI polls /api/stats to track progress.
 app.post('/api/refresh', (req, res) => {
-  if (refreshState.running) {
-    return res.json({
-      success: false,
-      message: 'Refresh already in progress. Poll /api/stats for progress.',
-      refreshRunning: true,
-    });
-  }
-
-  // Respond immediately — job runs in background
-  refreshState.running = true;
-  refreshState.startedAt = new Date().toISOString();
-  refreshState.error = null;
-  refreshState.channelCount = null;
-
+  const started = startRefresh();
   res.json({
-    success: true,
-    message: 'Refresh started in background. Poll /api/stats for progress.',
+    success: started,
+    message: started ? 'Refresh started in background. Poll /api/stats for progress.' : 'Refresh already in progress. Poll /api/stats for progress.',
     refreshRunning: true,
   });
-
-  // Run async without awaiting — fire and forget
-  fetchAndStoreChannels()
-    .then(count => {
-      refreshState.running = false;
-      refreshState.finishedAt = new Date().toISOString();
-      refreshState.channelCount = count;
-      console.log(`Background refresh complete: ${count} channels`);
-    })
-    .catch(err => {
-      refreshState.running = false;
-      refreshState.error = err.message;
-      console.error('Background refresh failed:', err.message);
-      db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)')
-        .run('last_error', err.message);
-    });
 });
 
 app.post('/api/report', (req, res) => {
@@ -528,28 +524,19 @@ app.post('/api/report', (req, res) => {
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log(`EPG Browser on port ${PORT}`);
-  console.log(GITHUB_TOKEN ? '✓ GitHub token present (5000 req/hr)' : '✗ No GITHUB_TOKEN — set in Coolify env vars');
+  if (GITHUB_TOKEN) console.log('GitHub token present (used for git clone auth only)');
 
   const count = db.prepare('SELECT COUNT(*) as count FROM channels').get().count;
-  if (count === 0) {
-    console.log('DB empty — running initial fetch in background...');
-    refreshState.running = true;
-    refreshState.startedAt = new Date().toISOString();
-    fetchAndStoreChannels()
-      .then(c => {
-        refreshState.running = false;
-        refreshState.channelCount = c;
-        console.log('Ready!');
-      })
-      .catch(err => {
-        refreshState.running = false;
-        refreshState.error = err.message;
-        console.error('Initial fetch failed:', err.message);
-        db.prepare('INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run('last_error', err.message);
-      });
+  const last = db.prepare('SELECT value FROM metadata WHERE key = ?').get('last_update')?.value;
+  const stale = !last || (Date.now() - new Date(last).getTime()) > REFRESH_INTERVAL_MS;
+
+  if (count === 0 || stale) {
+    console.log(count === 0 ? 'DB empty -- running initial fetch in background...' : 'Data older than 24h -- refreshing in background...');
+    startRefresh();
   } else {
-    console.log(`DB has ${count} channels — ready!`);
+    console.log(`DB has ${count} channels (updated ${last}) -- ready!`);
   }
+  setInterval(startRefresh, REFRESH_INTERVAL_MS);
 });
